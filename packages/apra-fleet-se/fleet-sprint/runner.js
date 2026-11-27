@@ -5,7 +5,7 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, GitSyncError,PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, SprintBlockedOnOperatorError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, GitSyncError,PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -60,7 +60,7 @@ import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache, resolveMember
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createDispatchAccounting } from './dispatch-accounting.mjs';
 import { lowerQuality, logLowerQualityWarn } from './lower-quality.mjs';
-import { createMemberInitProbe, createMemberVerifiedLookup, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
+import { createMemberInitProbe, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
@@ -215,7 +215,7 @@ import { runPublishPrPhase } from './phases/publish-pr.mjs';
 import {
     createHttpDoltPushMutexClient, createHttpChildIdAllocatorClient,
     createMcpDoltPushMutexClient, createMcpChildIdAllocatorClient,
-    createMemberReservationClient,
+    createMemberReservationClient, sprintIdentity,
 } from './coordination.mjs';
 // The KB work concern: the per-dispatch kb_query read, kb_captures/kb_promotions vetting and forwarding, and the
 // canonical-bible publish. Moved verbatim out of runner.js
@@ -343,7 +343,7 @@ import { holdTierEscalations } from './tier-escalation.mjs';
 // The premium-cap gate (after plan approval, before Develop) and the
 // decision it raises when two scoped re-plans leave the plan over the cap.
 import { runPremiumCapGate, holdPremiumCapBaseline } from './tier-cap.mjs';
-import { recordPendingDecision } from './decisions.mjs';
+import { recordPendingDecision, allRemainingWorkOperatorGated, collectPendingDecisions } from './decisions.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -619,6 +619,15 @@ function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, 
 }
 export { createSprintChangedFiles };
 
+// Every member-bound git command with a `<ref>:<path>` argument goes through
+// here: Git Bash (MSYS) would rewrite `origin/main:.fleet/x.json` into
+// `origin\main;.fleet\x.json`, so the member's SE builder decides
+// (gitRefPathCommand). No resolver (unit-test seam): the bare command.
+async function gitRefPathCmd(memberShell, memberName, gitCommand) {
+    if (typeof memberShell !== 'function') return gitCommand;
+    return (await memberShell(memberName)).gitRefPathCommand(gitCommand);
+}
+
 // Factory for kbWork.demotionCandidates()'s branchWithdrawals callback: the
 // entries an EARLIER final review on this sprint branch withdrew, so a
 // relaunched sprint's final review can hold (restore) one. A withdrawal is a
@@ -647,9 +656,10 @@ export { createSprintChangedFiles };
 //   baseBranch: string,
 //   bibleFile?: string,
 //   log?: Function,
+//   memberShell?: (memberName: string) => Promise<{ gitRefPathCommand: (cmd: string) => string }>,
 // }} opts
 // @returns {(memberName: string) => Promise<object[]>}
-function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet/kb-canonical.json', log = () => {} }) {
+function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet/kb-canonical.json', log = () => {}, memberShell }) {
     const parseDoc = (res) => {
         if (!res || !res.ok) return null;
         try {
@@ -664,7 +674,7 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
     // One maintainer's rows: { ok, rows, error }. `strict` tells a failed
     // HEAD read from a branch with no bible (see .read below).
     async function readCarried(memberName, strict) {
-        const headCmd = `git show HEAD:${bibleFile}`;
+        const headCmd = await gitRefPathCmd(memberShell, memberName, `git show HEAD:${bibleFile}`);
         const headRes = await command(headCmd, { member_name: memberName, silent: true, failSoft: true });
         const head = parseDoc(headRes);
         if (!head && strict) {
@@ -676,7 +686,7 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
         }
         const tombstones = withdrawnOf(head);
         if (tombstones.length === 0) return { ok: true, rows: [] };
-        const baseCmd = `git show origin/${baseBranch}:${bibleFile}`;
+        const baseCmd = await gitRefPathCmd(memberShell, memberName, `git show origin/${baseBranch}:${bibleFile}`);
         const baseRes = await command(baseCmd, { member_name: memberName, silent: true, failSoft: true });
         const base = parseDoc(baseRes);
         if (!base) log(`[kb-work] no readable bible from '${baseCmd}' on '${memberName}' -- every withdrawn tombstone on the sprint branch counts as this branch's own`);
@@ -710,6 +720,27 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
     return branchWithdrawnEntries;
 }
 export { createBranchWithdrawnEntries };
+
+// Factory for kbWork's baseBibleIds callback: the entry ids the bible carries
+// at a commit (a plain `git show <commit>:<bible>` on the maintainer). A
+// missing bible is an empty set; an unreadable one is null.
+function createBaseBibleIds({ command, bibleFile = '.fleet/kb-canonical.json', memberShell }) {
+    return async (memberName, baseCommit) => {
+        if (typeof baseCommit !== 'string' || !/^[0-9a-f]{7,64}$/i.test(baseCommit)) return null;
+        const ls = await command(`git ls-tree --name-only ${baseCommit} -- ${bibleFile}`, { member_name: memberName, silent: true, failSoft: true });
+        if (!ls || !ls.ok) return null;
+        if (String(ls.output || '').trim() === '') return new Set();
+        const res = await command(await gitRefPathCmd(memberShell, memberName, `git show ${baseCommit}:${bibleFile}`), { member_name: memberName, silent: true, failSoft: true });
+        if (!res || !res.ok) return null;
+        try {
+            const doc = JSON.parse(String(res.output || ''));
+            return new Set((doc && Array.isArray(doc.entries) ? doc.entries : []).filter((e) => e && typeof e.id === 'string').map((e) => e.id));
+        } catch {
+            return null;
+        }
+    };
+}
+export { createBaseBibleIds };
 
 // The PR body's "KB changes on merge" report at publish and at abort:
 // kbWork.kbChangesOnMerge() (this run's verdicts plus the withdrawn tombstones
@@ -1216,9 +1247,14 @@ async function runSprintCycle(context) {
     });
     const phase = beadsScope.wrapPhase(rawPhase);
 
-    // A stable per-sprint id for mutex fairness/introspection: the sprint branch
-    // is unique per concurrent sprint on the shared remote.
-    const sprintMutexId = (args && args.branch) ? String(args.branch) : 'sprint';
+    // The sprint identity (coordination.mjs sprintIdentity): the run id when
+    // the launcher gave one, else the branch. It must equal the holder id the
+    // launcher reserved members under (bin/cli.mjs), or every dispatch is
+    // refused as coming from another sprint.
+    const sprintMutexId = sprintIdentity({
+        runId: (args && typeof args.run_id === 'string') ? args.run_id : null,
+        branch: (args && args.branch) ? String(args.branch) : null,
+    });
 
     // Every agent() dispatch carries sprint_id -- the same opaque sprint-identity
     // token members are reserved under (bin/cli.mjs) -- so the server can
@@ -1549,8 +1585,9 @@ async function runSprintCycle(context) {
     // LLM-auth counterpart to onAuthFailure above, same precedence shape.
     // Dispatch-site catch handlers call this (via isAuthDispatchError(err))
     // before deciding whether to retry an otherwise non-retryable dispatch
-    // failure; it resolves true ("healed, retry once") or false ("not healed,
-    // abort").
+    // failure; it resolves { healed: true } ("retry once") or { healed: false,
+    // reason, cause, remedy } -- terminal: the ladder throws
+    // LlmAuthSelfHealFailedError with no further attempt.
     const onLlmAuthFailure = context.onLlmAuthFailure ?? (
         (args && typeof args.callTool === 'function')
             ? createLlmAuthSelfHealCallback({ callTool: args.callTool, log })
@@ -1733,8 +1770,8 @@ async function runSprintCycle(context) {
     // uses; the orchestrator callTool only reads member_detail. Never blocks:
     // a probe that throws leaves every member unverified and the sprint goes
     // on. Records land in sprint state (sprintState.memberInit), on the
-    // context (context.memberInit + context.isMemberVerified, read by the
-    // KNOWLEDGE BANK injection) and in the published viewer state.
+    // context (context.memberInit) and in the published viewer state. The
+    // KNOWLEDGE BANK injection does not read them: it is on for every member.
     // context.memberInitProbe is the test seam.
     const kbListTools = canMemberCall
         ? (member) => {
@@ -1772,7 +1809,6 @@ async function runSprintCycle(context) {
     }
     sprintState.memberInit.splice(0, sprintState.memberInit.length, ...memberInitRecords);
     context.memberInit = sprintState.memberInit;
-    context.isMemberVerified = createMemberVerifiedLookup(() => sprintState.memberInit);
     // Banner WARN at init (the per-member WARN lines come from the probe).
     logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'init');
     if (typeof publishState === 'function') {
@@ -1839,10 +1875,17 @@ async function runSprintCycle(context) {
     });
     // Entries an earlier final review on this branch withdrew (a relaunch's
     // final review can hold -- restore -- one). See createBranchWithdrawnEntries.
+    // The maintainer's SE builder for the bible reads' `<ref>:<path>` commands
+    // (a gitbash member needs MSYS_NO_PATHCONV=1). An unresolved member stays
+    // POSIX: the bare command, byte-identical to before (no fleet client: no lookup).
+    const bibleReadShell = sprintState.fleetApi
+        ? async (member) => getSeCommands(await resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log }))
+        : undefined;
     const branchWithdrawals = context.branchWithdrawals ?? createBranchWithdrawnEntries({
         command,
         baseBranch: validated.baseBranch,
         log,
+        memberShell: bibleReadShell,
     });
     const currentFileHashes = context.currentFileHashes ?? createCurrentFileHashes({ command, log });
     const kbWork = context.kbWork ?? createKbWorkClient({
@@ -1855,6 +1898,7 @@ async function runSprintCycle(context) {
         // routes must then include `withdraw`).
         listTools: kbListTools,
         branchWithdrawals,
+        baseBibleIds: context.baseBibleIds ?? createBaseBibleIds({ command, memberShell: bibleReadShell }),
         // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
         // candidate's cited files on demand to tell "basis unchanged since
         // the demotion" from "basis moved on" -- see createCurrentFileHashes.
@@ -1889,15 +1933,13 @@ async function runSprintCycle(context) {
     // handler can seal the bible commit: an aborted sprint commits nothing
     // further to the bible.
     context.kbWork = kbWork;
-    // Engine-side KNOWLEDGE BANK injection: skipped for a member whose own
-    // fleet MCP was verified at sprint init (context.isMemberVerified, set by
-    // the init probe above), applied to every other member.
+    // Engine-side KNOWLEDGE BANK injection: applied to every dispatched member
+    // (the maintainer is the knowledge source; a member's own KB is not primed).
     if (typeof validated.goal === 'string' && validated.goal.trim() && !isPriorityTierToken(validated.goal.trim())) {
         kbSprintContext.goals = [validated.goal.trim()];
     }
     kbInjection = context.kbInjection ?? createKbInjection({
         kbWork,
-        isMemberVerified: (name) => (typeof context.isMemberVerified === 'function' ? context.isMemberVerified(name) : false),
         // Deploy targets: the file paths named in the runbook the role follows
         // (deploy.md for the deployer, the playbooks for the test runners).
         deployTargets: async (memberName, role) => {
@@ -2064,6 +2106,9 @@ async function runSprintCycle(context) {
         // Built per member OS/shell (member_detail via resolveMemberTarget,
         // which degrades to POSIX and logs when the member cannot be resolved).
         memberShell: memberSeCommands,
+        // The launch pull settles a diverged clone the same way the first
+        // pre-dispatch pull does (git-sync.mjs), so it never stops the launch.
+        settleFor: async (member) => buildSettleCallback(member, { command, log, shell: await resolveSettleShell({ args, member, log, sprintState }) }),
     });
 
     // Member permission-config preflight: every dispatch member's composed
@@ -2151,6 +2196,12 @@ async function runSprintCycle(context) {
         onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider, ensureVcsAuthFresh,
         warnWorkflowsPermissionMissing,
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
+        // Verify-before-push (invariant H5, parent-link-guard.mjs): every
+        // D-push restores links a reconcile pull dropped before re-pushing.
+        verifyLinks: (member) => beadsScope.verifyLinksBeforePush(member),
+        // Link baseline before a beads-pushing agent edits its clone (see
+        // beadsScope.ensureLinkBaseline): no command when one already exists.
+        ensureLinkBaseline: (member) => beadsScope.ensureLinkBaseline(member),
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
@@ -2675,8 +2726,10 @@ async function runSprintCycle(context) {
         // so the one holding this sprint's captures -- and best-effort: a
         // cold KB must not fail the review.
         const kbCandidates = await kbWork.promotionCandidates(reviewerPool[0]);
-        if (kbCandidates.length > 0) {
-            log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
+        // Re-verification rows (reverify: true) are logged by kbWork itself.
+        const kbInferredCount = kbCandidates.filter((e) => !(e && e.reverify === true)).length;
+        if (kbInferredCount > 0) {
+            log(`[kb-work] offering ${kbInferredCount} INFERRED entr(ies) to the reviewer for promotion.`);
         }
         // No demotion candidates here: they are offered at the FINAL review
         // only (see phases/final-review.mjs and kbWork.demotionCandidates).
@@ -2871,7 +2924,11 @@ async function runSprintCycle(context) {
     });
 
     const preflightSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
-    await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
+    // flattenRecovery: a clone whose beads remote was flattened (no common
+    // ancestor) is re-bootstrapped here, loudly, keeping a backup -- or the
+    // launch is refused when the clone holds unpushed work
+    // (beads-flatten-recovery.mjs). Commands built per member OS/shell.
+    await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, flattenRecovery: memberSeCommands, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -3082,7 +3139,7 @@ async function runSprintCycle(context) {
     // parent (or a target bead that is itself all-children-closed). Computed
     // once here and reused below so the "nothing to do" diagnostics never
     // misreport this as a deadlock.
-    const preSprintVerifyIds = initialBeads.length === 0
+    let preSprintVerifyIds = initialBeads.length === 0
         ? classifyVerifySet(await fetchAllBeadsShared(), targetIssues).verifyIds
         : [];
     if (preSprintVerifyIds.length > 0) {
@@ -3205,6 +3262,21 @@ async function runSprintCycle(context) {
             }
 
             if (initialBeads.length === 0) {
+                // apra-fleet-pel2: the verify routing above came from the
+                // run's cached snapshot, which another process's `bd close`
+                // never invalidates; the fresh notDoneBeads read can already
+                // see those closes (e.g. a concurrent sprint closing the last
+                // child of a shared parent). Re-classify on a snapshot taken
+                // after that read so routing and readiness agree before
+                // calling this a deadlock.
+                invalidateAllBeadsCache();
+                preSprintVerifyIds = classifyVerifySet(await fetchAllBeadsShared(), targetIssues).verifyIds;
+                if (preSprintVerifyIds.length > 0) {
+                    log(`Pre-sprint validation: no ready leaf beads, but ${preSprintVerifyIds.length} bead(s) are implementation-complete and routed to verify: ${preSprintVerifyIds.join(', ')}. Proceeding as a verify-only sprint.`);
+                }
+            }
+
+            if (initialBeads.length === 0 && preSprintVerifyIds.length === 0) {
                 const diagnostics = notDoneBeads.map((b) => {
                     const blockers = unmetBlockers(b);
                     return blockers.length > 0
@@ -3821,6 +3893,41 @@ async function runSprintCycle(context) {
         // carry-over exit to Finalization instead (planRejectedCarryOver).
         // PlanReviewDispatchFailedError is a different class and always
         // propagates.
+        // Skip gate: when every open in-scope bead is held by an open operator
+        // decision gate, a planner can only come back BLOCKED, so none is
+        // dispatched. Pause for the answer; with no pause channel (or nothing
+        // this run can wait on) end with the typed blocked-on-operator outcome.
+        // Reads Route's snapshot from this cycle: no extra bd call. The in-run
+        // reclaim between Route and here invalidates the shared cache, but it
+        // only moves in_progress beads back to open, which this gate treats
+        // the same (neither is closed), and changes no labels or edges.
+        {
+            const gate = allRemainingWorkOperatorGated(beadsScope.scopedFromSnapshot(routeBeads), sprintState, routeBeads);
+            if (gate.gated) {
+                log(`[fleet-sprint] Plan C${cycle} skipped: all remaining work waits on operator decisions [${gate.heldIds.join(', ')}].`);
+                if (decisionWait && decisionWait.hasPending()) {
+                    const answers = await decisionWait.awaitAnswer({ where: `Plan C${cycle} (skipped)`, cycle });
+                    if (!Array.isArray(answers) || answers.length === 0) {
+                        throw new SprintBlockedOnOperatorError(
+                            `Cycle ${cycle}: all remaining work waits on operator decisions and none was answered; answer the decision(s) and relaunch the sprint.`,
+                            { beadIds: gate.heldIds, decisionBeadId: (collectPendingDecisions(sprintState)[0] || {}).decisionBeadId || null, details: { cycle } },
+                        );
+                    }
+                } else {
+                    const pendingRecord = collectPendingDecisions(sprintState)[0] || null;
+                    throw new SprintBlockedOnOperatorError(
+                        `Cycle ${cycle}: all remaining work waits on operator decisions [${gate.heldIds.join(', ')}] and this run ` +
+                        `${decisionWait ? 'has no filed decision it can wait on' : 'has no pause/resume channel'}; answer the decision(s) and relaunch the sprint.`,
+                        {
+                            question: pendingRecord ? pendingRecord.question : null,
+                            beadIds: gate.heldIds,
+                            decisionBeadId: pendingRecord ? pendingRecord.decisionBeadId || null : (gate.gateIds[0] || null),
+                            details: { cycle },
+                        },
+                    );
+                }
+            }
+        }
         let planOutcome;
         try {
             planOutcome = await runPlanPhase({
@@ -3837,6 +3944,8 @@ async function runSprintCycle(context) {
                 updateDashboard,
                 bdListScoped,
                 tierPolicy,
+                decisionWait,
+                fetchAllBeads: fetchAllBeadsShared,
             });
         } catch (err) {
             if (!(err instanceof SprintPlanRejectedError)) throw err;
@@ -5036,7 +5145,7 @@ async function runSprintCycle(context) {
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
         kbWork,
-        command, memberSeCommands,
+        command, memberSeCommands, publishState,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 

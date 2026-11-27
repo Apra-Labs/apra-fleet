@@ -59,7 +59,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 
 | Pillar | Concretely |
 |---|---|
-| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). |
+| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). Windows spawns resolve commands by absolute path only, install refuses while an apra-fleet server runs from the install prefix, and replace-full and uninstall refuse before removing anything when they detect another process holding the installed exe ([what is detected](docs/install.md#what-the-automated-replace-full-does-on-windows-and-with-a-supervisor)). |
 | **Any model** | Claude, Codex, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
@@ -239,7 +239,7 @@ MCP tools that ship with the KB:
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_demote` | Withdraw trust: lower a CONFIRMED entry back to INFERRED (the one reversible rung; never a ladder in its own direction) |
-| `kb_capabilities` | Report what the project KB serves: `{contract, routes, branch_aware, query_filters?}` (the KB server's GET /api/kb/capabilities body for http KBs; read-only) |
+| `kb_capabilities` | Report what the project KB serves: `{contract, routes, branch_aware, query_filters?}` (the KB server's GET /api/kb/capabilities body for http KBs; read-only), plus `fleet_build` `{version, bible_rules}` of the answering fleet server |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
 | `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer); `withdrawals` records a reviewer's withdrawal as a bible tombstone (no local row change; applied by `kb_import` only once merged) and `restore_ids` undoes one (`ids` never clears a withdrawn tombstone; `demoted_ids` tombstones only ids the base bible carries); on an http KB project entries are skipped (`bible_skipped: true`) but withdrawals are still written as tombstones; a withdrawn tombstone outranks a demotion, an id is never both an entry and a tombstone, and an unreadable base bible is reported as `base_bible_error`. To apply merged withdrawals from the CLI run `apra-fleet kb import --ref refs/remotes/origin/main --base-branch main` after fetching |
@@ -284,6 +284,9 @@ session's own repo, including linked worktrees and custom `core.hooksPath`)
 and registers the knowledge bible merge driver in that clone (local merges of
 `.fleet/kb-canonical.json` resolve by entry id; see
 [packages/apra-fleet-se/docs/kb-canonical-merge.md](packages/apra-fleet-se/docs/kb-canonical-merge.md));
+the driver runs through a POSIX `sh` guard, so if its recorded binary path has
+moved the merge falls back to `git merge-file` with a message naming `kb_setup`,
+and re-running `kb_setup` re-registers a stale driver (reporting `repairedFrom`);
 it does not scope the config. On a shared fleet server, treat
 `kb_setup --remote` as a change for all of its users.
 
@@ -566,6 +569,7 @@ third-party verticals.
 | fleet-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | fleet-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, `serve.mjs --detach`, `apra-fleet status` Supervisor line, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| Engine resilience (operator-blocked planning, supervisor detach-by-default, LLM auth heal, unpushed-beads launch refusal) | [docs/engine-resilience-operator-blocks-and-supervisor.md](docs/engine-resilience-operator-blocks-and-supervisor.md) |
 | Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |

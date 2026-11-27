@@ -21,6 +21,13 @@ const FAKE_POWERSHELL = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.e
 vi.mock('../src/os/windows-executable.js', () => ({
   windowsExecutable: (name: string) => (name === 'powershell.exe' ? FAKE_POWERSHELL : name),
 }));
+const FAKE_CLAUDE = 'C:/Users/x/AppData/Roaming/npm/claude.exe';
+vi.mock('../src/os/windows-command.js', () => ({
+  windowsCommand: (name: string) => (name === 'claude'
+    ? { kind: 'exe', file: FAKE_CLAUDE, args: [], shell: false, source: FAKE_CLAUDE, env: { NoDefaultCurrentDirectoryInExePath: '1' } }
+    : null),
+  planEnv: (plan: { env: Record<string, string> }) => ({ ...plan.env }),
+}));
 vi.mock('../src/cli/install.js', () => ({
   isApraFleetRunning: vi.fn().mockReturnValue(false),
 }));
@@ -174,10 +181,19 @@ describe('uninstall', () => {
     
     await runUninstall(['--yes']);
     
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('claude mcp remove apra-fleet'),
-      expect.any(Object)
-    );
+    if (process.platform === 'win32') {
+      // absolute program + argv, never a command string through cmd.exe
+      expect(execFileSync).toHaveBeenCalledWith(
+        FAKE_CLAUDE,
+        ['mcp', 'remove', 'apra-fleet', '--scope', 'user'],
+        expect.objectContaining({ shell: false }),
+      );
+    } else {
+      expect(execSync).toHaveBeenCalledWith(
+        expect.stringContaining('claude mcp remove apra-fleet'),
+        expect.any(Object)
+      );
+    }
   });
 
   it('removes only specific skills if requested', async () => {
@@ -1045,6 +1061,154 @@ describe('uninstall', () => {
       expect(process.exit).toHaveBeenCalledWith(1);
       expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain(doltPath);
       for (const p of [exePath, config.HOOKS_DIR, config.SCRIPTS_DIR]) expect(removed).toContain(p);
+    });
+
+    describe('installed exe held by ANOTHER process: refused before anything is removed', () => {
+      // platform and removability come through UninstallDeps, so this runs on every host OS.
+      const otherExec = path.join(os.tmpdir(), 'elsewhere', 'node.exe');
+      const busy = (p: string) => Object.assign(new Error(`EBUSY: resource busy or locked, open '${p}'`), { code: 'EBUSY' });
+      beforeEach(() => {
+        Object.defineProperty(process, 'execPath', { value: otherExec, configurable: true });
+      });
+
+      function assertNothingRemoved(remove: ReturnType<typeof vi.fn>) {
+        expect(remove).not.toHaveBeenCalled();
+        expect(vi.mocked(fs.rmSync)).not.toHaveBeenCalled();
+        expect(vi.mocked(fs.unlinkSync)).not.toHaveBeenCalled();
+        expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+        // No supervisor service command (schtasks/taskkill/systemctl/launchctl), no claude CLI call.
+        expect(vi.mocked(execFileSync)).not.toHaveBeenCalled();
+        expect(vi.mocked(execSync)).not.toHaveBeenCalled();
+        expect(mcpSvcMgr.unregister).not.toHaveBeenCalled();
+      }
+
+      it('win32 full uninstall: exits 1 naming the exe and the holder; no service, workflow, skill, hook, setting or BIN_DIR entry is touched', async () => {
+        const probeLocked = vi.fn((p: string) => busy(p));
+        const remove = vi.fn();
+        const spawnDetached = vi.fn();
+        const sleep = vi.fn();
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(runUninstall(['--yes'], { platform: 'win32', probeLocked, remove, spawnDetached, sleep })).rejects.toThrow('exit');
+
+        expect(process.exit).toHaveBeenCalledWith(1);
+        expect(probeLocked).toHaveBeenCalledWith(exePath);
+        // Retried while a just-stopped process exits, then refused.
+        expect(probeLocked).toHaveBeenCalledTimes(3);
+        expect(sleep).toHaveBeenCalledTimes(2);
+        assertNothingRemoved(remove);
+        expect(spawnDetached).not.toHaveBeenCalled();
+        const err = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+        expect(err).toContain(exePath);
+        expect(err).toContain('EBUSY');
+        expect(err).toContain('Nothing was uninstalled');
+        expect(err).toMatch(/server or fleet-sprint supervisor/);
+        expect(err).toContain('/api/shutdown');
+        expect(err).toContain('schtasks /End /TN ApraFleetSupervisor');
+      });
+
+      it('win32 --force with a running server: the server is stopped first, the refusal says how to bring it back', async () => {
+        vi.mocked(install.isApraFleetRunning).mockReturnValue(true);
+        const probeLocked = vi.fn((p: string) => busy(p));
+        const remove = vi.fn();
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(runUninstall(['--yes', '--force'], { platform: 'win32', probeLocked, remove, sleep: () => {} })).rejects.toThrow('exit');
+
+        expect(mcpSvcMgr.stop).toHaveBeenCalledTimes(1);
+        // The probe runs AFTER the stop (the server's own handle is released by it).
+        expect(mcpSvcMgr.stop.mock.invocationCallOrder[0]).toBeLessThan(probeLocked.mock.invocationCallOrder[0]);
+        expect(process.exit).toHaveBeenCalledWith(1);
+        assertNothingRemoved(remove);
+        expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain('apra-fleet start');
+      });
+
+      it('win32: a lock released while the stopped server exits is not a refusal -- the uninstall proceeds', async () => {
+        let calls = 0;
+        const probeLocked = vi.fn((p: string) => (++calls === 1 ? busy(p) : null));
+        const { remove, removed } = failing({});
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await runUninstall(['--yes'], { platform: 'win32', probeLocked, remove, sleep: () => {} });
+
+        expect(probeLocked).toHaveBeenCalledTimes(2);
+        expect(process.exit).not.toHaveBeenCalled();
+        for (const p of [exePath, doltPath, config.HOOKS_DIR, config.SCRIPTS_DIR]) expect(removed).toContain(p);
+      });
+
+      it('self-uninstall (the locked exe IS process.execPath): no refusal, the deferred delete still runs', async () => {
+        Object.defineProperty(process, 'execPath', { value: exePath, configurable: true });
+        const probeLocked = vi.fn((p: string) => busy(p));
+        const { remove, removed } = failing({ [exePath]: 'EPERM' });
+        const spawnDetached = vi.fn();
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await runUninstall(['--yes'], { platform: 'win32', probeLocked, remove, spawnDetached, sleep: () => {} });
+
+        expect(probeLocked).not.toHaveBeenCalled();
+        expect(spawnDetached).toHaveBeenCalledTimes(1);
+        for (const p of [doltPath, config.HOOKS_DIR, config.SCRIPTS_DIR]) expect(removed).toContain(p);
+        expect(mcpSvcMgr.unregister).toHaveBeenCalled();
+        expect(errSpy).not.toHaveBeenCalled();
+        expect(process.exit).not.toHaveBeenCalled();
+      });
+
+      it('self-uninstall while ANOTHER process runs the same exe: E-UNINSTALL-EXE-IN-USE naming its pid, nothing removed', async () => {
+        Object.defineProperty(process, 'execPath', { value: exePath, configurable: true });
+        const runningProcesses = vi.fn(() => [
+          { pid: 4321, exePath: exePath.toUpperCase() },
+          { pid: 999, exePath: path.join(os.tmpdir(), 'other', 'apra-fleet.exe') },
+        ]);
+        const remove = vi.fn();
+        const spawnDetached = vi.fn();
+        const sleep = vi.fn();
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(runUninstall(['--yes'], { platform: 'win32', runningProcesses, remove, spawnDetached, sleep })).rejects.toThrow('exit');
+
+        expect(process.exit).toHaveBeenCalledWith(1);
+        expect(runningProcesses).toHaveBeenCalledTimes(3);
+        expect(sleep).toHaveBeenCalledTimes(2);
+        assertNothingRemoved(remove);
+        expect(spawnDetached).not.toHaveBeenCalled();
+        const err = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+        expect(err).toContain('E-UNINSTALL-EXE-IN-USE');
+        expect(err).toContain('pid 4321');
+        expect(err).not.toContain('999');
+        expect(err).toContain('Nothing was uninstalled');
+      });
+
+      it('self-uninstall: our own pid, our parent, other exes and unresolved paths do not block; a holder that exits does not either', async () => {
+        Object.defineProperty(process, 'execPath', { value: exePath, configurable: true });
+        let calls = 0;
+        const runningProcesses = vi.fn(() => [
+          { pid: process.pid, exePath },
+          { pid: process.ppid, exePath },
+          { pid: 999, exePath: path.join(os.tmpdir(), 'other', 'apra-fleet.exe') },
+          { pid: 1000, exePath: null },
+          ...(++calls === 1 ? [{ pid: 4321, exePath }] : []),
+        ]);
+        const { remove, removed } = failing({ [exePath]: 'EPERM' });
+        const spawnDetached = vi.fn();
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await runUninstall(['--yes'], { platform: 'win32', runningProcesses, remove, spawnDetached, sleep: () => {} });
+
+        expect(runningProcesses).toHaveBeenCalledTimes(2);
+        expect(process.exit).not.toHaveBeenCalled();
+        expect(spawnDetached).toHaveBeenCalledTimes(1);
+        for (const p of [doltPath, config.HOOKS_DIR, config.SCRIPTS_DIR]) expect(removed).toContain(p);
+      });
+
+      it.each([
+        ['linux', ['--yes']],
+        ['win32', ['--yes', '--dry-run']],
+        ['win32', ['--yes', '--llm', 'claude']],
+      ] as const)('%s %j: the probe is not run (only a real full Windows uninstall decides removability)', async (platform, args) => {
+        const probeLocked = vi.fn((p: string) => busy(p));
+        await runUninstall([...args], { platform, probeLocked, remove: vi.fn(), spawnDetached: vi.fn(), sleep: () => {} }).catch(() => {});
+        expect(probeLocked).not.toHaveBeenCalled();
+      });
     });
 
     it.each(['EPERM', 'EIO'])('non-Windows %s on the exe: exit 1, other targets still removed, no deferred delete', async (code) => {

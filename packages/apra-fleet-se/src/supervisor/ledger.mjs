@@ -167,6 +167,9 @@ export const LEDGER_SCHEMA = Object.freeze({
                     // entries that predate the fields.
                     launchedBy: ACTOR_SCHEMA,
                     stoppedBy: ACTOR_SCHEMA,
+                    // The launch's maxCycles (GET /api/sprints maxCycles).
+                    // Present only when the launch set it.
+                    maxCycles: { type: 'integer', minimum: 1 },
                 },
             },
         },
@@ -283,10 +286,18 @@ function normalizeReservation(input, now) {
     const launchedBy = normalizeActor(input.launchedBy, 'launchedBy');
     const stoppedBy = normalizeActor(input.stoppedBy, 'stoppedBy');
 
+    // The launch's maxCycles: present only when the launch set it, so an
+    // entry without it (and every reader's view of it) is unchanged.
+    let maxCycles = input.maxCycles ?? null;
+    if (maxCycles !== null && !(Number.isInteger(maxCycles) && maxCycles >= 1)) {
+        throw new TypeError('maxCycles must be a positive integer or null');
+    }
+
     return {
         members, issueRoots, childPid, reservedAt, branch, base, goal, tierPolicy, tierOverrides, exitCode, signal, exitedAt, logPath, beads,
         ...(launchedBy ? { launchedBy } : {}),
         ...(stoppedBy ? { stoppedBy } : {}),
+        ...(maxCycles !== null ? { maxCycles } : {}),
     };
 }
 
@@ -337,6 +348,7 @@ function cloneReservation(r) {
         beads: r.beads ? { ...r.beads } : null,
         ...(r.launchedBy ? { launchedBy: { ...r.launchedBy } } : {}),
         ...(r.stoppedBy ? { stoppedBy: { ...r.stoppedBy } } : {}),
+        ...(r.maxCycles != null ? { maxCycles: r.maxCycles } : {}),
     };
 }
 

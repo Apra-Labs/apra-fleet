@@ -304,9 +304,11 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
       // The id-keyed, tombstone-aware merge driver for .fleet/kb-canonical.json,
       // so a local merge/rebase of two bible-changing branches resolves itself.
       const driver = installBibleMergeDriver(repoPath);
-      steps.push(driver.installed
-        ? 'Registered the knowledge bible merge driver (git config and ' + driver.attributesPath + ')'
-        : 'Skipped bible merge driver: ' + driver.reason);
+      if (!driver.installed) steps.push('Skipped bible merge driver: ' + driver.reason);
+      else if (driver.repairedFrom !== undefined) {
+        steps.push('Repaired the knowledge bible merge driver: re-registered with the current apra-fleet paths (git config and '
+          + driver.attributesPath + '); previous driver command: ' + driver.repairedFrom);
+      } else steps.push('Registered the knowledge bible merge driver (git config and ' + driver.attributesPath + ')');
     } else {
       steps.push('Skipped git hook: no .git directory found at ' + repoPath);
     }

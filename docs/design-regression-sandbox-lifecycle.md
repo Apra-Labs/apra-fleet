@@ -169,3 +169,20 @@ open, on a tag-then-retry design:
 - The retry path refuses to proceed if teardown of the previous attempt did
   not fully succeed, rather than layering a new bind attempt on top of a
   partially-torn-down previous one.
+
+## Member-host upgrade regression job
+
+A separate CI job (Windows runner) exercises the member-host upgrade paths:
+quote-led cases plus forward, rollback and their sandboxed variants. Invariants:
+
+- The harness refuses to run unless it is on CI and an explicit disposable-host
+  flag is set; it never runs on a developer machine by accident.
+- The sandbox redirects HOME, USERPROFILE and the global git config so the
+  host's real state is never touched.
+- Every job that can land on macOS carries an explicit timeout.
+- Rollback must restore from the real replace-full backup, refuse without
+  destroying state, and compare by equality. Known risk: the product backs up
+  the fleet key only if it exists (it is created lazily), while the harness
+  rollback copies it unconditionally and counts an empty pre-replace hash as a
+  mismatch, so a member with no key could fail for reasons unrelated to the
+  product.

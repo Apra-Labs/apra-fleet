@@ -439,6 +439,12 @@ One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy
 **[Observability](mcp-tools.md#4-observability-tools)**  -- `fleet_status`, `member_detail`
 Two-layer monitoring. `fleet_status` gives a quick summary table across all members with fleet-aware busy detection (distinguishes between Claude processes serving this member vs unrelated Claude activity). `member_detail` drills into one member with connectivity, CLI version, session state, and system resource metrics.
 
+`member_detail` reports a session as busy only from an in-flight dispatch (`inFlightAgents`) or from a fleet-launched process: one whose argv carries the `.fleet-task.md` marker plus either the session id or the member's work folder. An unrelated process with the same name, or a stale pid, never makes a member busy. `session.statusSource` and `session.busyPid` name the signal behind a busy reading. The Windows probe is a single encoded PowerShell command; the Claude CLI's argv has no work folder on Windows, so there a dispatch is matched by session id only (dispatches from this server are still covered by in-flight detection).
+
+The LLM auth label shown by `list_members` and `member_detail` comes from one shared helper. It joins `api-key`, `oauth-token` and `oauth-login` with `+` in a fixed order, checks every auth env var a provider declares (not just the first found), and filters out empty var names. Providers classify a var via the optional `ProviderAdapter.authEnvVarKind`.
+
+`execute_command` with `network_policy=deny` blocks git network subcommands (push, pull, fetch, clone, ls-remote, remote update; also spelled `git.exe`/`git.cmd`, quoted, via the PowerShell `&` operator, or after global options such as `-C`) and also checks `restart_command`. Local git stays allowed. These two checks are deny-only: `confirm` (the default policy) still prompts only for a network tool in `command`, exactly as before, so upgrading users see no new prompts. This is a best-effort heuristic: `git submodule update --remote` and git aliases are not covered.
+
 ## Cross-Platform Support
 
 Members can run Windows, macOS, or Linux. The `os/*` command builders generate the right shell commands for each OS -- different commands for checking processes, reading memory, and setting environment variables -- while `src/utils/platform.ts` handles OS detection and path resolution. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.

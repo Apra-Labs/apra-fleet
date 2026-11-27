@@ -53,7 +53,10 @@ import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { terminalInfoFromState, terminalInfoFromHistory } from './pr-not-opened.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { unpushedBeadsMessage, UNPUSHED_BEADS_REMEDY } from './beads-pushed-check.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
+import { resolveStringRefs } from '@apralabs/apra-fleet-workflow/viewer/lean-state';
+import { buildSprintSummary, runSummaryFromState } from './sprint-summary.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -179,10 +182,103 @@ function unreservableMemberNamesFromList(raw) {
  * @returns {string}
  */
 export function formatMemberConflict(conflicts) {
-    const parts = conflicts.map(
-        (c) => `sprint '${c.sprintId}' already claims [${c.members.join(', ')}]`,
-    );
+    const parts = conflicts.map((c) => {
+        const head = `sprint '${c.sprintId}' already claims [${c.members.join(', ')}]`;
+        return c.serverOnly ? `${head} (${serverOnlyHolderRecovery(c.sprintId, c.members)})` : head;
+    });
     return `member overlap rejects launch: ${parts.join('; ')}`;
+}
+
+/**
+ * Recovery text for a holder that only the fleet server knows about (no
+ * ledger entry in this supervisor). Such a holder may be a live sprint launched
+ * directly through the CLI, so it is never released automatically unless the
+ * stale-holder rule (isProvablyDeadHolder) proves it dead; the operator gets the
+ * exact commands instead.
+ * @param {string} holderId
+ * @param {string[]} members
+ * @returns {string}
+ */
+export function serverOnlyHolderRecovery(holderId, members) {
+    const perMember = members
+        .map((m) => `member_reservation {"member_name":"${m}","action":"force_release"}`)
+        .join(' ; ');
+    return `held on the fleet server by '${holderId}', which is not a sprint of this supervisor and may still be running ` +
+        `(for example a sprint launched directly from the CLI). If that sprint is gone, release it with ` +
+        `POST /api/reservations/${encodeURIComponent(holderId)}/force-release, or per member: ${perMember}`;
+}
+
+/**
+ * A copy of a listMembers()-shaped result with `reservedBy` cleared on every
+ * member whose stale reservation was just released, so the overlap guard
+ * judges the post-release state without a second fleet read.
+ * @param {object|object[]} raw
+ * @param {Array<{ member: string, holder: string }>} released
+ * @returns {{ members: object[] }}
+ */
+function withoutReleasedHolders(raw, released) {
+    const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+    const byMember = new Map(released.map((r) => [r.member, r.holder]));
+    return {
+        members: list.map((m) => (m && typeof m === 'object' && byMember.has(m.name) && m.reservedBy === byMember.get(m.name)
+            ? { ...m, reservedBy: null }
+            : m)),
+    };
+}
+
+/**
+ * History events that prove a sprint id is no longer running: this
+ * supervisor launched it and recorded its end (exit, finish, launch failure)
+ * or released its reservation after confirming the child gone.
+ * FORCE_RELEASED is NOT in this set: it proves death only when the kill is
+ * recorded as having landed (see isDeadHolderEvent).
+ */
+const DEAD_HOLDER_EVENTS = new Set([
+    HISTORY_EVENTS.ABORTED_BY_RESTART,
+    HISTORY_EVENTS.AUTO_RELEASED,
+    HISTORY_EVENTS.CHILD_EXITED,
+    HISTORY_EVENTS.FINISHED,
+    HISTORY_EVENTS.LAUNCH_FAILED,
+]);
+
+/**
+ * True when one history event proves its sprint id dead. A FORCE_RELEASED
+ * event counts only when the ledger path recorded `killed === true` (the kill
+ * signal landed or the pid was already gone). A failed kill (EPERM), an entry
+ * with no child pid (`killed` absent), a legacy event without the field, and
+ * a fleet-server-only release (`serverOnly`, nothing killed; a live CLI
+ * sprint can re-reserve under the same id) never do.
+ * @param {object} e
+ * @returns {boolean}
+ */
+function isDeadHolderEvent(e) {
+    if (!e || typeof e !== 'object') return false;
+    if (e.event === HISTORY_EVENTS.FORCE_RELEASED) return e.killed === true && e.serverOnly !== true;
+    return DEAD_HOLDER_EVENTS.has(e.event);
+}
+
+/**
+ * The stale-holder rule (docs/supervisor-api.md "Stale server-side
+ * reservations"). A fleet-server reservation holder is provably dead ONLY
+ * when (1) this supervisor's ledger holds no entry for it AND (2) this
+ * supervisor's history records a terminal or release event for exactly that
+ * id. Absence from the ledger alone proves nothing: a sprint launched
+ * directly through the CLI is live but never in this ledger, and an
+ * older-version holder written as a branch name has no history either. Both
+ * keep the 409 with the recovery commands instead.
+ * @param {string} holderId
+ * @param {{ get: (id: string) => object|undefined }} ledger
+ * @param {{ forSprint?: (id: string) => object[] }} history
+ * @returns {{ dead: boolean, event?: string }}
+ */
+export function isProvablyDeadHolder(holderId, ledger, history) {
+    if (typeof holderId !== 'string' || holderId.length === 0) return { dead: false };
+    if (ledger.get(holderId)) return { dead: false };
+    if (!history || typeof history.forSprint !== 'function') return { dead: false };
+    let events;
+    try { events = history.forSprint(holderId); } catch { return { dead: false }; }
+    const hit = (events ?? []).filter(isDeadHolderEvent).pop();
+    return hit ? { dead: true, event: hit.event } : { dead: false };
 }
 
 /**
@@ -237,7 +333,9 @@ export function defaultMemberOverlapGuard(ledger, listMembers) {
             conflictsBySprint.get(sprintId).add(member);
         };
 
+        const ledgerIds = new Set();
         for (const reservation of ledger.list()) {
+            ledgerIds.add(reservation.sprintId);
             for (const m of (reservation.members ?? [])) {
                 if (requestSet.has(m)) addConflict(reservation.sprintId, m);
             }
@@ -267,7 +365,14 @@ export function defaultMemberOverlapGuard(ledger, listMembers) {
 
         if (conflictsBySprint.size > 0) {
             const conflicts = [...conflictsBySprint.entries()]
-                .map(([sprintId, members]) => ({ sprintId, members: [...members].sort() }))
+                .map(([sprintId, members]) => ({
+                    sprintId,
+                    members: [...members].sort(),
+                    // A holder only the fleet server knows: the message names
+                    // the recovery (it may be a live CLI sprint, so it is never
+                    // released here).
+                    ...(ledgerIds.has(sprintId) ? {} : { serverOnly: true }),
+                }))
                 .sort((a, b) => a.sprintId.localeCompare(b.sprintId));
             throw new ApiError(409, formatMemberConflict(conflicts), 'members');
         }
@@ -279,19 +384,79 @@ export function proxyChildState(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
     const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 2000;
     return new Promise((resolve, reject) => {
+        // Whole-request deadline, as in proxyChildSummary below.
+        const deadline = setTimeout(() => {
+            reject(new Error('child /state timed out'));
+            req.destroy();
+        }, timeoutMs);
+        deadline.unref?.();
         const req = http.request({ host, port, path: '/state', method: 'GET', timeout: timeoutMs }, (res) => {
             const chunks = [];
             res.on('data', (c) => chunks.push(c));
             res.on('end', () => {
+                clearTimeout(deadline);
                 const body = Buffer.concat(chunks).toString('utf-8');
                 try { resolve(body.length ? JSON.parse(body) : {}); }
                 catch (err) { reject(new Error(`child /state returned invalid JSON: ${err.message}`)); }
             });
         });
         req.on('timeout', () => { req.destroy(new Error('child /state timed out')); });
-        req.on('error', reject);
+        req.on('error', (err) => { clearTimeout(deadline); reject(err); });
         req.end();
     });
+}
+
+/**
+ * Per-child budget for GET /api/sprints' summary fan-out. Below the install
+ * guard's 1.5 s budget for the whole list call, so one hung child cannot make
+ * the guard lose the supervisor's sprint list.
+ */
+export const LIST_SUMMARY_TIMEOUT_MS = 1000;
+
+/**
+ * Default child HTTP proxy: GET the child's small run summary
+ * (`/state?summary=1`, never lean-encoded) and JSON-parse it.
+ */
+export function proxyChildSummary(port, opts = {}) {
+    const host = opts.host ?? '127.0.0.1';
+    const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 2000;
+    return new Promise((resolve, reject) => {
+        // Whole-request deadline (the socket `timeout` alone is an idle
+        // timer, which a slowly trickling child would never trip).
+        const deadline = setTimeout(() => {
+            reject(new Error('child /state?summary=1 timed out'));
+            req.destroy();
+        }, timeoutMs);
+        deadline.unref?.();
+        const req = http.request({ host, port, path: '/state?summary=1', method: 'GET', timeout: timeoutMs }, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf-8');
+                clearTimeout(deadline);
+                if (res.statusCode !== 200) { reject(new Error(`child /state?summary=1 answered ${res.statusCode}`)); return; }
+                try { resolve(body.length ? JSON.parse(body) : null); }
+                catch (err) { reject(new Error(`child /state?summary=1 returned invalid JSON: ${err.message}`)); }
+            });
+        });
+        req.on('timeout', () => { req.destroy(new Error('child /state?summary=1 timed out')); });
+        req.on('error', (err) => { clearTimeout(deadline); reject(err); });
+        req.end();
+    });
+}
+
+/**
+ * A child `/state` payload with every lean `{ $ref }` marker expanded from its
+ * `_strings` table and the table itself dropped (the resolved full tree that
+ * GET /api/sprints/:id?full=1 returns). A payload without a table round-trips
+ * unchanged.
+ * @param {object|null} state
+ * @returns {object|null}
+ */
+export function resolveChildState(state) {
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return state;
+    const { _strings: table, ...rest } = state;
+    return Array.isArray(table) ? resolveStringRefs(rest, table) : rest;
 }
 
 /** Default child HTTP proxy: POST the child's cooperative `/stop` endpoint. */
@@ -433,6 +598,10 @@ export function defaultBuildVersion() {
  *     Called once at controller creation to stamp what this process is
  *     running, and again on every launch() to read what's on disk now --
  *     see launch()'s buildVersionWarning below.
+ *   checkBeadsPushed?: () => Promise<{ pending: boolean|null, why?: string }>,
+ *     Unpushed-beads launch preflight (see beads-pushed-check.mjs): pending
+ *     true -> 409 with the push remedy; null -> launch proceeds with a
+ *     warning; absent -> no check.
  *   beadsIdentity?: { get: () => object|null },
  *     src/supervisor/beads-identity.mjs's createBeadsIdentityState() handle.
  *     When present, launch() records toBeadsSummary(get()) as the ledger
@@ -443,8 +612,23 @@ export function defaultBuildVersion() {
  *     launch()): degraded -> 503 with the reason; member list unreadable ->
  *     503; absent backlog role -> injected; a different member -> 400.
  *     Absent (tests, older wiring) -> today's unpinned behaviour.
+ *   releaseMemberReservation?: ({ member: string, holder: string }) => Promise<{ ok: boolean, error?: string }>,
+ *     Releases one member's fleet-server reservation, conditional on its
+ *     holder. launch() calls it only for a holder isProvablyDeadHolder()
+ *     proves dead; absent -> no server-side reservation is ever released.
  * }} deps
  */
+// Every top-level key POST /api/sprints accepts (incl. aliases issue/target_issue,
+// base/base_branch). Anything else is a 400.
+const LAUNCH_FIELDS = new Set([
+    'issue', 'target_issue', 'branch', 'base', 'base_branch', 'members', 'goal',
+    'maxCycles', 'allowMissingMembers', 'requirementsFile', 'roleMap', 'budget',
+    'phases', 'kbDemotionLoop', 'tierPolicy', 'tierOverrides', 'decisionNotify',
+    'overrideRelaunchGate',
+]);
+// Known sprint/CLI arguments the launch API deliberately does not accept.
+const CLI_ONLY_LAUNCH_FIELDS = new Set(['azdevops_pat_secret_name']);
+
 export function createSprintController(deps = {}) {
     const { ledger, spawner } = deps;
     if (!ledger || typeof ledger.list !== 'function' || typeof ledger.get !== 'function' || typeof ledger.claim !== 'function') {
@@ -457,11 +641,19 @@ export function createSprintController(deps = {}) {
     const listMembers = deps.listMembers ?? (() => ({ members: [] }));
     const getBacklog = deps.getBacklog ?? (() => ({ tasks: [] }));
     const proxyState = deps.proxyState ?? proxyChildState;
+    const proxySummary = deps.proxySummary ?? proxyChildSummary;
     const proxyStop = deps.proxyStop ?? proxyChildStop;
     const proxyAction = deps.proxyAction ?? proxyChildAction;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
     const beadsIdentity = deps.beadsIdentity ?? null;
+    // Launch preflight: () => Promise<{ pending: boolean|null, why?: string }>.
+    // Absent (tests, older wiring) -> no unpushed-beads check.
+    const checkBeadsPushed = typeof deps.checkBeadsPushed === 'function' ? deps.checkBeadsPushed : null;
     const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
+    // ({ member, holder }) => Promise<{ ok: boolean, error?: string }>: releases
+    // one member's fleet-server reservation, conditional on `holder`. Absent ->
+    // launch never releases a server-side reservation.
+    const releaseMemberReservation = typeof deps.releaseMemberReservation === 'function' ? deps.releaseMemberReservation : null;
     const beadsSummaryForLaunch = () => {
         if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
         try {
@@ -492,6 +684,20 @@ export function createSprintController(deps = {}) {
 
     /** Validate a launch request against the SHARED runner.js helpers. */
     function validateLaunchRequest(body) {
+        // Unknown top-level keys are a 400 naming the field(s): silently
+        // dropping them let a documented-looking override vanish with a 201.
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+            throw new ApiError(400, 'request body must be a JSON object');
+        }
+        const unknownKeys = Object.keys(body).filter((k) => !LAUNCH_FIELDS.has(k));
+        if (unknownKeys.length > 0) {
+            const cli = unknownKeys.filter((k) => CLI_ONLY_LAUNCH_FIELDS.has(k));
+            const msg = cli.length > 0
+                ? `${cli.join(', ')}: a sprint/CLI argument that the supervisor launch API does not accept; it would never reach the sprint`
+                    + (unknownKeys.length > cli.length ? `; unknown launch field(s): ${unknownKeys.filter((k) => !CLI_ONLY_LAUNCH_FIELDS.has(k)).join(', ')}` : '')
+                : `unknown launch field(s): ${unknownKeys.join(', ')}; accepted fields: ${[...LAUNCH_FIELDS].join(', ')}`;
+            throw new ApiError(400, msg, unknownKeys.join(','));
+        }
         const rawIssue = body.issue ?? body.target_issue;
         const branch = body.branch;
         const base = body.base ?? body.base_branch;
@@ -797,8 +1003,39 @@ export function createSprintController(deps = {}) {
             }
         }
 
+        // Unpushed-beads preflight: a launch while the supervisor's beads clone
+        // holds changes the Dolt remote lacks makes the target member plan from
+        // stale scope. Definitely unpushed -> 409 with the remedy; inconclusive
+        // -> proceed with one loud warning. Runs before any reservation/spawn.
+        let beadsPushWarning = null;
+        if (checkBeadsPushed) {
+            let outcome;
+            try {
+                outcome = await checkBeadsPushed();
+            } catch (err) {
+                outcome = { pending: null, why: `the probe threw: ${(err && err.message) || err}` };
+            }
+            if (outcome && outcome.pending === true) {
+                throw new ApiError(409, unpushedBeadsMessage(), 'beads');
+            }
+            if (!outcome || outcome.pending !== false) {
+                beadsPushWarning = `could not verify that the local beads clone is pushed (${(outcome && outcome.why) || 'unknown reason'}); launching anyway -- if scope looks stale on the target member, in the supervisor's beads folder ${UNPUSHED_BEADS_REMEDY}.`;
+                console.warn(`[supervisor] WARNING: ${beadsPushWarning}`);
+            }
+        }
+
+        // Stale server-side reservations: a requested member whose fleet-server
+        // holder is not a ledger sprint is released ONLY when the stale-holder
+        // rule (isProvablyDeadHolder) proves that holder dead; otherwise the
+        // overlap guard below keeps the 409 and names the recovery. A ledger
+        // holder (a live sprint of this supervisor) is never touched here.
+        const staleReleased = await releaseProvablyDeadHolders(union, membersListRaw);
+        const guardMembersList = staleReleased.length > 0
+            ? withoutReleasedHolders(membersListRaw, staleReleased)
+            : membersListRaw;
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
-        await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
+        await beforeLaunch({ members: union, issueRoots, membersList: guardMembersList });
 
         // apra-fleet-k7b.1: generate the sprintId BEFORE spawning (not after,
         // as before) so it can be forwarded into the child's own argv as
@@ -875,6 +1112,8 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            // GET /api/sprints reports it as maxCycles (null when omitted).
+            ...(body.maxCycles !== undefined ? { maxCycles: body.maxCycles } : {}),
             tierPolicy,
             tierOverrides: tierOverrides ?? null,
             // Which .beads this supervisor resolved at launch time (see
@@ -896,8 +1135,46 @@ export function createSprintController(deps = {}) {
             tierPolicy,
             tierOverrides: tierOverrides ?? null,
             buildVersionWarning,
-            warnings: aliasWarnings,
+            ...(beadsPushWarning ? { beadsPushWarning } : {}),
+            warnings: beadsPushWarning ? [...aliasWarnings, beadsPushWarning] : aliasWarnings,
+            ...(staleReleased.length > 0 ? { staleReservationsReleased: staleReleased } : {}),
         };
+    }
+
+    /**
+     * Release each requested member's fleet-server reservation whose holder
+     * the stale-holder rule proves dead. Needs both the member list read and
+     * the injected releaseMemberReservation; without either nothing is
+     * released (the overlap guard then reports the holder). Each release is
+     * conditional on the holder (action "release" with sprint_id = holder), so
+     * a member another sprint re-reserved in between is never cleared.
+     * @returns {Promise<Array<{ member: string, holder: string, event: string }>>}
+     */
+    async function releaseProvablyDeadHolders(union, raw) {
+        if (!releaseMemberReservation || raw === undefined) return [];
+        const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+        const wanted = new Set(union);
+        const released = [];
+        for (const m of list) {
+            if (!m || typeof m !== 'object' || !m.name || !m.reservedBy || m.unreservable) continue;
+            if (!wanted.has(m.name)) continue;
+            const verdict = isProvablyDeadHolder(m.reservedBy, ledger, history);
+            if (!verdict.dead) continue;
+            let out;
+            try {
+                // eslint-disable-next-line no-await-in-loop -- one fleet call per member, serialized.
+                out = await releaseMemberReservation({ member: m.name, holder: m.reservedBy });
+            } catch (err) {
+                out = { ok: false, error: err && err.message ? err.message : String(err) };
+            }
+            if (out && out.ok) {
+                console.warn(`[supervisor] STALE RESERVATION RELEASED: member '${m.name}' was held on the fleet server by '${m.reservedBy}', which this supervisor's history records as ended ('${verdict.event}') and which holds no ledger entry.`);
+                released.push({ member: m.name, holder: m.reservedBy, event: verdict.event });
+            } else {
+                console.error(`[supervisor] could not release stale reservation of member '${m.name}' held by '${m.reservedBy}': ${(out && out.error) || 'unknown error'}`);
+            }
+        }
+        return released;
     }
 
     // Additive list-row fields for a sprint that already reached a terminal
@@ -906,10 +1183,9 @@ export function createSprintController(deps = {}) {
     // but the PR was skipped. The persisted terminal run-state is the source;
     // the FINISHED history event is the fallback. A sprint still running (or
     // whose PR opened) gets no marker. Never throws.
-    function terminalListFields(r) {
+    function terminalListFields(r, st) {
         try {
             let info = null;
-            const st = hasTerminalState(r.sprintId, r.branch ?? null);
             if (st && typeof st === 'object') {
                 info = terminalInfoFromState(st);
             } else {
@@ -927,24 +1203,55 @@ export function createSprintController(deps = {}) {
     }
 
     // -- GET /api/sprints : every live sprint ---------------------------------
+    // Each row carries the same top-level summary fields as GET
+    // /api/sprints/:id (sprint-summary.mjs), pulled concurrently from each
+    // child's GET /state?summary=1 (or the persisted terminal state). A child
+    // that cannot be reached leaves its run fields null; the row stays.
     async function listSprints() {
         const freshness = ledger.getScopeFreshness();
-        return {
-            sprints: ledger.list().map((r) => ({
+        const sprints = await Promise.all(ledger.list().map(async (r) => {
+            let st = null;
+            try { st = hasTerminalState(r.sprintId, r.branch ?? null); } catch { st = null; }
+            const port = resolvePort(r.childPid ?? null) ?? null;
+            let runSummary = null;
+            if (st && typeof st === 'object') {
+                runSummary = runSummaryFromState(st);
+            } else if (port != null) {
+                try { runSummary = await proxySummary(port, { timeoutMs: LIST_SUMMARY_TIMEOUT_MS }); } catch { runSummary = null; }
+            }
+            return {
+                ...buildSprintSummary({ sprintId: r.sprintId, live: !st && port != null, runSummary, reservation: r }),
                 sprintId: r.sprintId,
                 members: r.members,
                 issueRoots: r.issueRoots,
                 childPid: r.childPid ?? null,
                 tierPolicy: r.tierPolicy ?? null,
                 tierOverrides: r.tierOverrides ?? null,
-                port: resolvePort(r.childPid ?? null) ?? null,
-                ...terminalListFields(r),
-            })),
-            scopeFreshness: freshness,
-        };
+                port,
+                ...terminalListFields(r, st),
+            };
+        }));
+        return { sprints, scopeFreshness: freshness };
     }
 
     // -- GET /api/sprints/:id : live child state, else history ----------------
+    // Response: the stable summary (sprint-summary.mjs) plus the pre-existing
+    // fields, including the live child's state tree resolved by
+    // resolveChildState(); no lean ref marker or string table anywhere.
+    // GET ?full=1 is accepted by the route and returns the same response.
+    // Additive terminal fields from a persisted terminal run state: `analysis`
+    // ({ text, generatedAt } from the sprint-analysis extension namespace, null
+    // for older runs) and `result` (the run's verdict/status/notes).
+    function terminalAnalysisFields(st) {
+        if (!st || typeof st !== 'object') return {};
+        const ns = st.extensions && typeof st.extensions === 'object' ? st.extensions['sprint-analysis'] : null;
+        const analysis = ns && typeof ns === 'object' && typeof ns.text === 'string'
+            ? { text: ns.text, generatedAt: ns.generatedAt ?? null }
+            : null;
+        const res = st.result && typeof st.result === 'object' ? st.result : null;
+        return { analysis, result: res ? { ...res } : null };
+    }
+
     async function getSprint(id) {
         const reservation = ledger.get(id);
         if (reservation) {
@@ -964,19 +1271,35 @@ export function createSprintController(deps = {}) {
                 const resultStatus = res && typeof res === 'object' && typeof res.status === 'string' ? res.status : null;
                 const warnings = res && typeof res === 'object' && Array.isArray(res.warnings) ? res.warnings : [];
                 return {
+                    ...buildSprintSummary({ sprintId: id, live: false, runSummary: runSummaryFromState(terminalState), reservation }),
                     sprintId: id, live: false, terminal: true, state: terminalState,
+                    ...terminalAnalysisFields(terminalState),
                     ...(resultStatus ? { resultStatus } : {}),
                     ...(warnings.length > 0 ? { warnings } : {}),
                 };
             }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
-                const state = await proxyState(port);
+                // `state` stays in the default response (a documented,
+                // required field before the summary existed), resolved so it
+                // never carries a lean ref marker or the _strings table.
+                let runSummary;
+                let rawState;
+                try {
+                    [runSummary, rawState] = await Promise.all([proxySummary(port), proxyState(port)]);
+                } catch (err) {
+                    // The child did not answer: a clear 504 (timed out) or
+                    // 502 (unreachable), never a bare 500.
+                    const msg = err && err.message ? err.message : String(err);
+                    if (/timed out|ETIMEDOUT/i.test(msg)) throw new ApiError(504, `sprint '${id}' child did not answer in time (${msg}); its process may be suspended or overloaded`);
+                    throw new ApiError(502, `sprint '${id}' child could not be reached (${msg})`);
+                }
                 // pendingDecisions (full, untruncated) and the run state while
                 // paused for a decision, lifted from the child's decisions summary.
-                const { pendingDecisions, decisionState } = decisionsFromChildState(state);
+                const { pendingDecisions, decisionState } = decisionsFromChildState({ summary: runSummary });
                 return {
-                    sprintId: id, live: true, state, pendingDecisions,
+                    ...buildSprintSummary({ sprintId: id, live: true, runSummary, reservation }),
+                    sprintId: id, live: true, state: resolveChildState(rawState), pendingDecisions,
                     ...(decisionState ? { decisionState } : {}),
                     ...(decisionState === 'paused-awaiting-decision' ? { runState: decisionState } : {}),
                 };
@@ -989,8 +1312,16 @@ export function createSprintController(deps = {}) {
             // for auth failure) so they stay visible after the reservation release.
             const fin = history.forSprint(id).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
             const warnings = fin && Array.isArray(fin.warnings) ? fin.warnings : [];
+            // The persisted terminal state outlives the ledger release: read it
+            // by run id (the sprint id) for analysis + result.
+            let persisted = null;
+            try { persisted = hasTerminalState(id, reservation?.branch ?? null); } catch { persisted = null; }
             return {
+                // Known only from history: no run summary; status is the
+                // latest history event's name.
+                ...buildSprintSummary({ sprintId: id, live: false, runSummary: null, reservation, status: latest.event ?? null }),
                 sprintId: id, live: false, history: history.forSprint(id), latest,
+                ...terminalAnalysisFields(persisted),
                 ...(fin && fin.resultStatus ? { resultStatus: fin.resultStatus } : {}),
                 ...(warnings.length > 0 ? { warnings } : {}),
             };
@@ -1044,7 +1375,16 @@ export function createSprintController(deps = {}) {
         if (!reservation) throw new ApiError(404, `no live sprint '${id}'`);
         const port = resolvePort(reservation.childPid ?? null);
         if (port == null) throw new ApiError(409, `sprint '${id}' has no reachable child (port unknown)`);
-        const out = await proxyAction(port, 'decisions', 'answer', { decisionId, answer: body.answer });
+        let out;
+        try {
+            out = await proxyAction(port, 'decisions', 'answer', { decisionId, answer: body.answer });
+        } catch (err) {
+            // Transport failure: the child may already have recorded the answer.
+            const msg = err && err.message ? err.message : String(err);
+            const check = `the answer may already be recorded; check GET /api/sprints/${id} pendingDecisions before retrying`;
+            if (/timed out|ETIMEDOUT/i.test(msg)) throw new ApiError(504, `decision answer timed out waiting for the sprint child (${msg}); ${check}`);
+            throw new ApiError(502, `decision answer could not reach the sprint child (${msg}); ${check}`);
+        }
         if (out.statusCode === 404) throw new ApiError(404, `no pending decision '${decisionId}' in sprint '${id}'`);
         if (out.statusCode === 400) throw new ApiError(400, (out.body && out.body.error) || 'bad decision answer', 'answer');
         if (out.statusCode !== 200) throw new ApiError(409, (out.body && out.body.error) || `decision answer failed (${out.statusCode})`);
@@ -1106,6 +1446,8 @@ export function registerSprintRoutes(supervisor, controller) {
 
     supervisor.route('GET', '/api/sprints/:id', async (req, res, ctx) => {
         try {
+            // ?full=1 (or full=true) is accepted and ignored: the live state
+            // tree is always returned, resolved.
             sendJson(res, 200, await controller.getSprint(ctx.params.id));
         } catch (err) {
             if (!onApiError(res, err)) throw err;

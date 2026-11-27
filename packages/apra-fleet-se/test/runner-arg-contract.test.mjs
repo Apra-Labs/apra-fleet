@@ -35,6 +35,28 @@ const VALID_ARGS = Object.freeze({
 // validateArgs / validateIssueId / validateBranchName -- pure unit tests
 // ---------------------------------------------------------------------------
 
+/**
+ * The orchestrator-side bookkeeping `bd` commands of a dispatch log. Excluded
+ * as per-member work: `bd dolt *` and `bd config get sync.remote` (the
+ * beads-sync bracket around each dispatched agent's own call), `bd where` and
+ * `bd --version` (per-member identity/pin probes), and the beads-link reads
+ * the sync bracket takes on that same member right before/after its
+ * `bd dolt pull` and right before its `bd dolt push` (the link guard reads
+ * the clone that pulls or pushes, never the backlog member).
+ */
+function orchestratorBdDispatches(dispatchLog) {
+    const isSyncBracket = (d) => d && (d.command.startsWith('bd dolt') || d.command.startsWith('bd config get sync.remote'));
+    const bd = dispatchLog.filter((d) => d.command.startsWith('bd '));
+    return bd.filter((d, i) => {
+        if (isSyncBracket(d) || d.command.startsWith('bd where') || d.command === 'bd --version') return false;
+        if (d.command === 'bd list --all --limit 0 --json --brief') {
+            const sameMember = (j) => (bd[j] && bd[j].member_name === d.member_name ? bd[j] : null);
+            if (isSyncBracket(sameMember(i - 1)) || isSyncBracket(sameMember(i + 1))) return false;
+        }
+        return true;
+    });
+}
+
 describe('validateIssueId', () => {
     test('accepts ids matching the safe pattern', () => {
         for (const id of ['bd-1', 'BD-42', 'epic.1_2', 'a']) {
@@ -637,8 +659,11 @@ describe('runner.js mock-level execution', () => {
         const PREFLIGHT_PROBE = 'git remote get-url origin';
         const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c) && c !== PREFLIGHT_PROBE);
         assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
+        // The gate lists the work folder for a beads recovery backup an
+        // interrupted flattened-remote recovery left behind.
+        const LEFTOVER_PROBE = "ls -1A -- '.'";
         for (const pre of spy.commandLog.slice(identityEnd, firstGitIdx)) {
-            if (pre === PREFLIGHT_PROBE) continue;
+            if (pre === PREFLIGHT_PROBE || pre === LEFTOVER_PROBE) continue;
             assert.match(
                 pre,
                 /^bd /,
@@ -827,8 +852,7 @@ describe('runner.js mock-level execution', () => {
         // (it deliberately runs on EVERY physical member, not just the
         // orchestrator), excluded for the same reason -- as is `bd --version`,
         // the sprint-start version pin probe, which also runs on every member.
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where') && d.command !== 'bd --version');
+        const bdDispatches = orchestratorBdDispatches(spy.dispatchLog);
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
@@ -906,8 +930,7 @@ describe('runner.js mock-level execution', () => {
         // `bd config get sync.remote` excluded like `bd dolt *` -- part of
         // the per-member D-push bracket (Issue 31 pre-gate), see above.
         // `bd where` (per-member beads identity probe) excluded, see above.
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where') && d.command !== 'bd --version');
+        const bdDispatches = orchestratorBdDispatches(spy.dispatchLog);
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);

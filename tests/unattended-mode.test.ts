@@ -60,6 +60,7 @@ describe('register_member: unattended field persistence', () => {
       port: 22,
       username: 'user',
       auth_type: 'key',
+      key_path: '/home/user/.ssh/id_test',
       work_folder: '/home/user/project',
       unattended: 'auto',
     });
@@ -78,6 +79,7 @@ describe('register_member: unattended field persistence', () => {
       port: 22,
       username: 'user',
       auth_type: 'key',
+      key_path: '/home/user/.ssh/id_test',
       work_folder: '/home/user/dangerous',
       unattended: 'dangerous',
     });
@@ -96,6 +98,7 @@ describe('register_member: unattended field persistence', () => {
       port: 22,
       username: 'user',
       auth_type: 'key',
+      key_path: '/home/user/.ssh/id_test',
       work_folder: '/home/user/default',
     });
 

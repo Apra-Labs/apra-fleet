@@ -211,18 +211,117 @@ export function credentialDelete(name: string): boolean {
 
 // ---------------------------------------------------------------------------
 // Task-scoped credential registry for long-running task output redaction (H2)
+// and launch-time fingerprints for secret-rotation detection.
+//
+// A long_running task resolves each {{secret.NAME}} once, at launch, and
+// bakes the value into its wrapper: a later rotation never reaches it. The
+// launch fingerprint (sha256 of the plaintext) lets monitor_task and
+// credential_store_set/delete tell the caller the task still holds the old
+// value. The fingerprint is compared only; it never leaves this module.
+// The registry is in-memory: after a server restart no warning is possible.
 // ---------------------------------------------------------------------------
-interface TaskCredential { name: string; plaintext: string; }
+interface TaskCredential {
+  name: string;
+  plaintext: string;
+  fingerprint: string;
+  launchedAt: string;
+}
 const taskCredentials = new Map<string, TaskCredential[]>();
+
+function fingerprintSecret(plaintext: string): string {
+  return crypto.createHash('sha256').update(plaintext, 'utf8').digest('hex');
+}
 
 export function registerTaskCredentials(taskId: string, credentials: { name: string; plaintext: string }[]): void {
   if (credentials.length > 0) {
-    taskCredentials.set(taskId, credentials.map(c => ({ name: c.name, plaintext: c.plaintext })));
+    const launchedAt = new Date().toISOString();
+    taskCredentials.set(taskId, credentials.map(c => ({
+      name: c.name,
+      plaintext: c.plaintext,
+      fingerprint: fingerprintSecret(c.plaintext),
+      launchedAt,
+    })));
   }
 }
 
 export function getTaskCredentials(taskId: string): TaskCredential[] {
   return taskCredentials.get(taskId) ?? [];
+}
+
+export type TaskSecretChangeKind = 'rotated' | 'deleted' | 'expired';
+
+export interface TaskSecretChange {
+  name: string;
+  change: TaskSecretChangeKind;
+}
+
+/**
+ * Current fingerprint of a named secret, read without side effects:
+ * persistent wins over session (same precedence as credentialResolve),
+ * allowedMembers is not applied, and an expired record is reported as
+ * expired, never deleted. Reads the persisted file on every call, so a
+ * rotation written by another process (the CLI) is seen.
+ */
+function currentSecretState(name: string): { status: 'ok'; fingerprint: string } | { status: 'missing' } | { status: 'expired' } {
+  const found = lookupServerSecret(name);
+  if (found.status === 'missing') return { status: 'missing' };
+  if (found.status === 'expired') return { status: 'expired' };
+  return { status: 'ok', fingerprint: fingerprintSecret(found.value) };
+}
+
+/**
+ * Compare each secret bound to a long_running task at launch with its
+ * current value. Returns only the secrets that are no longer the launch
+ * value (rotated), gone (deleted) or past their TTL (expired); an empty
+ * array when nothing changed or the task has no bound secrets.
+ */
+export function getTaskSecretChanges(taskId: string): TaskSecretChange[] {
+  const changes: TaskSecretChange[] = [];
+  for (const cred of getTaskCredentials(taskId)) {
+    let state: ReturnType<typeof currentSecretState>;
+    try {
+      state = currentSecretState(cred.name);
+    } catch {
+      // Unreadable store or undecryptable record: no claim either way.
+      continue;
+    }
+    if (state.status === 'missing') changes.push({ name: cred.name, change: 'deleted' });
+    else if (state.status === 'expired') changes.push({ name: cred.name, change: 'expired' });
+    else if (state.fingerprint !== cred.fingerprint) changes.push({ name: cred.name, change: 'rotated' });
+  }
+  return changes;
+}
+
+/**
+ * Task ids of long_running tasks launched with a value of `name` that is no
+ * longer its current effective value (call after a set or delete). Read
+ * without side effects, like getTaskSecretChanges.
+ */
+export function getTasksHoldingStaleSecret(name: string): string[] {
+  let current: ReturnType<typeof currentSecretState>;
+  try {
+    current = currentSecretState(name);
+  } catch {
+    return [];
+  }
+  const ids: string[] = [];
+  for (const [taskId, creds] of taskCredentials) {
+    const cred = creds.find(c => c.name === name);
+    if (!cred) continue;
+    if (current.status !== 'ok' || current.fingerprint !== cred.fingerprint) ids.push(taskId);
+  }
+  return ids;
+}
+
+/**
+ * The line credential_store_set/delete append when long_running tasks were
+ * launched with the previous value of `name`. Empty string when none.
+ */
+export function staleTaskNotice(name: string, taskIds: string[]): string {
+  if (taskIds.length === 0) return '';
+  return `\nWARNING: long_running task(s) ${taskIds.join(', ')} launched with the previous value of ${name} ` +
+    'and may still be running. A long_running task resolves {{secret.' + name + '}} once at launch and keeps that old value. ' +
+    'Check each with monitor_task (it shows how to stop the task on its member), then relaunch it with execute_command long_running.';
 }
 
 /**

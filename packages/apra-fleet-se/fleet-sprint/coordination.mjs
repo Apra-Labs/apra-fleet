@@ -14,14 +14,93 @@
 // would not resolve in the shipped layout.
 //
 // `sprintId`/`sprint_id` on every client here is the SAME opaque sprint-
-// identity token (derived in runner.js from the sprint's branch name, see
-// sprintMutexId) -- it is passed through verbatim by every client below,
+// identity token (sprintIdentity() below: the run id when the launcher gave
+// one, else the branch name) -- it is passed through verbatim by every client below,
 // never re-derived, reformatted, prefixed or namespaced, so a dispatch and
 // the reservation/mutex/allocator calls that gate it always agree on who
 // "this sprint" is.
 
 import { resultText } from './mcp-result.mjs';
-import { MemberReservationResumeError } from './errors.mjs';
+import { MemberReservationResumeError, SupervisorUnreachableError } from './errors.mjs';
+
+/**
+ * The one sprint identity used for member reservations, dispatch sprint_id,
+ * the dolt push mutex and the child-id allocator: the incarnation-unique run
+ * id when the launcher supplied one (a supervisor forwards its own sprint id
+ * as --run-id), else the branch name (a direct CLI launch, as before). Using
+ * the run id keeps a supervisor sprint's fleet-server reservation holder equal
+ * to its ledger/history id, so a dead child's holder can be proven dead, and
+ * keeps two sprints on the same branch from sharing one reservation.
+ * @param {{ runId?: string|null, branch?: string|null }} opts
+ * @returns {string}
+ */
+export function sprintIdentity({ runId, branch } = {}) {
+    if (typeof runId === 'string' && runId.length > 0) return runId;
+    if (typeof branch === 'string' && branch.length > 0) return branch;
+    return 'sprint';
+}
+
+// ---------------------------------------------------------------------------
+// Bounded wait for the supervisor service URL (acquire / allocate only).
+//
+// Env FLEET_SPRINT_SUPERVISOR_WAIT_MS sets the total budget a REFUSED
+// connection is retried for (default 120000 ms, clamped to a minimum of 100).
+// ONLY a refused TCP connect (error cause code ECONNREFUSED, read from the
+// cause chain, never from message text) is retried: no request bytes reached
+// the supervisor, so a resend cannot double-acquire a lease or mint a second
+// child id. A reset / hang-up / timeout / any failure after connect, and any
+// HTTP response, is never retried; a transport failure is thrown at once as
+// SupervisorUnreachableError, an HTTP error propagates as before.
+// ---------------------------------------------------------------------------
+export const SUPERVISOR_WAIT_ENV = 'FLEET_SPRINT_SUPERVISOR_WAIT_MS';
+export const DEFAULT_SUPERVISOR_WAIT_MS = 120_000;
+export const DEFAULT_SUPERVISOR_BACKOFF_MS = 2_000;
+
+export function resolveSupervisorWaitMs(env = process.env) {
+    const n = Number(env[SUPERVISOR_WAIT_ENV]);
+    return Number.isFinite(n) && n >= 100 ? Math.floor(n) : DEFAULT_SUPERVISOR_WAIT_MS;
+}
+
+/** True when the cause chain (incl. AggregateError members) holds ECONNREFUSED. */
+function isConnectionRefused(err) {
+    const seen = new Set();
+    const walk = (e) => {
+        if (!e || typeof e !== 'object' || seen.has(e)) return false;
+        seen.add(e);
+        if (e.code === 'ECONNREFUSED') return true;
+        if (Array.isArray(e.errors) && e.errors.some(walk)) return true;
+        return walk(e.cause);
+    };
+    return walk(err);
+}
+
+/**
+ * fetch() wrapper: retries a refused connection within the budget, converts
+ * any other thrown (transport-level) failure to SupervisorUnreachableError at
+ * once. Resolves with the Response untouched.
+ */
+async function fetchWithRefusedWait(fetchImpl, base, url, init, opts, log, label) {
+    const now = opts.now ?? Date.now;
+    const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    const budgetMs = opts.supervisorWaitMs > 0 ? opts.supervisorWaitMs : resolveSupervisorWaitMs();
+    const backoffMs = opts.supervisorBackoffMs > 0 ? opts.supervisorBackoffMs : DEFAULT_SUPERVISOR_BACKOFF_MS;
+    const startedAt = now();
+    for (;;) {
+        try {
+            return await fetchImpl(url, init);
+        } catch (err) {
+            if (!isConnectionRefused(err)) {
+                throw new SupervisorUnreachableError(base, { detail: `connection failed: ${err?.cause?.code ?? err?.code ?? err?.message}`, cause: err });
+            }
+            const elapsed = now() - startedAt;
+            if (elapsed + backoffMs > budgetMs) {
+                throw new SupervisorUnreachableError(base, { detail: `connection refused for ${Math.round(elapsed / 1000)}s`, details: { waitedMs: elapsed }, cause: err });
+            }
+            log(`${label} supervisor at ${base} refused the connection; waiting (elapsed ${Math.round(elapsed / 1000)}s of ${Math.round(budgetMs / 1000)}s)`);
+            await sleep(backoffMs);
+        }
+    }
+}
 
 /**
  * Child-side HTTP client for the supervisor-owned global dolt push mutex
@@ -63,12 +142,18 @@ export function createHttpDoltPushMutexClient(opts = {}) {
     const routeFor = (sprintId, action) =>
         `${base}/api/dolt-push-mutex/${encodeURIComponent(sprintId)}/${action}`;
 
-    async function postJson(url, body) {
-        const res = await fetchImpl(url, {
+    async function postJson(url, body, { waitForService = false } = {}) {
+        const init = {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body ?? {}),
-        });
+        };
+        let res;
+        if (waitForService) {
+            res = await fetchWithRefusedWait(fetchImpl, base, url, init, opts, log, '[dolt-mutex]');
+        } else {
+            res = await fetchImpl(url, init);
+        }
         if (!res || !res.ok) {
             const status = res ? res.status : 'no-response';
             throw new Error(`[dolt-mutex] ${url} returned HTTP ${status}`);
@@ -87,7 +172,7 @@ export function createHttpDoltPushMutexClient(opts = {}) {
             waitLog.unref?.();
             let payload;
             try {
-                payload = await postJson(routeFor(id, 'acquire'), { pid: o.pid ?? null });
+                payload = await postJson(routeFor(id, 'acquire'), { pid: o.pid ?? null }, { waitForService: true });
             } finally {
                 clearInterval(waitLog);
             }
@@ -158,12 +243,18 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
     }
     const log = opts.log ?? (() => {});
 
-    async function postJson(url, body) {
-        const res = await fetchImpl(url, {
+    async function postJson(url, body, { waitForService = false } = {}) {
+        const init = {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body ?? {}),
-        });
+        };
+        let res;
+        if (waitForService) {
+            res = await fetchWithRefusedWait(fetchImpl, base, url, init, opts, log, '[id-allocator]');
+        } else {
+            res = await fetchImpl(url, init);
+        }
         if (!res || !res.ok) {
             const status = res ? res.status : 'no-response';
             throw new Error(`[id-allocator] ${url} returned HTTP ${status}`);
@@ -179,7 +270,7 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
                 pid: o.pid ?? null,
                 sprintId: o.sprintId ?? boundSprintId ?? null,
                 floor: o.floor,
-            });
+            }, { waitForService: true });
             return { childId: payload.childId ?? null, seq: payload.seq, token: payload.token ?? null, expiresAt: payload.expiresAt };
         },
         async confirm(token) {
@@ -424,11 +515,16 @@ export function createMcpChildIdAllocatorClient(opts = {}) {
 function reservationOutcome(result, text) {
     const structured = result && result.structuredContent;
     if (structured && typeof structured.ok === 'boolean') {
-        return { ok: structured.ok, outcome: typeof structured.outcome === 'string' ? structured.outcome : null };
+        return {
+            ok: structured.ok,
+            outcome: typeof structured.outcome === 'string' ? structured.outcome : null,
+            owner: typeof structured.ownerSprintId === 'string' ? structured.ownerSprintId : null,
+        };
     }
     return {
         ok: !((result && result.isError) || String(text == null ? '' : text).startsWith('[-]')),
         outcome: null,
+        owner: null,
     };
 }
 
@@ -446,10 +542,10 @@ export function createMemberReservationClient(opts = {}) {
         try {
             const result = await callTool('member_reservation', { member_name: member, action, sprint_id: sprintId });
             const text = resultText(result);
-            const { ok, outcome } = reservationOutcome(result, text);
+            const { ok, outcome, owner } = reservationOutcome(result, text);
             if (!ok) {
                 log(`[member-reservation] ${action} rejected for member '${member}'${outcome ? ` (${outcome})` : ''}: ${text || '(no detail)'}`);
-                return { ok: false, text, outcome };
+                return { ok: false, text, outcome, owner };
             }
             return { ok: true, text, outcome };
         } catch (err) {
@@ -477,20 +573,25 @@ export function createMemberReservationClient(opts = {}) {
         // the members this call did reserve are handed back. A transport throw
         // or any other rejection stays best-effort, exactly as in reserveAll()
         // (execute_prompt's dispatch-time reservedBy check still applies).
-        // @returns {Promise<{ held: string[] }>}
+        // @returns {Promise<{ held: string[], holders: Record<string, string|null> }>}
         async reserveForLaunch() {
             if (!active) return { held: [] };
             const reserved = [];
             const held = [];
+            // member -> owning sprint id (null when the server did not say).
+            const holders = {};
             for (const member of members) {
                 const res = await callFor('reserve', member);
                 if (res.ok) reserved.push(member);
-                else if (res.outcome === 'already_reserved_by_other') held.push(member);
+                else if (res.outcome === 'already_reserved_by_other') {
+                    held.push(member);
+                    holders[member] = res.owner ?? null;
+                }
             }
             if (held.length > 0) {
                 for (const member of reserved) await callFor('release', member);
             }
-            return { held };
+            return { held, holders };
         },
 
         // (apra-fleet-p2to.4.2) Pause hand-back: release EVERY member so a

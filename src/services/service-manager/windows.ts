@@ -1,6 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { windowsExecutable } from '../../os/windows-executable.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { FLEET_DIR } from '../../paths.js';
 import type { RegisterResult, ServiceManager, ServiceStatus, StopOptions } from './types.js';
 import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
@@ -60,7 +63,7 @@ function quietExec(cmd: string, args: string[]): Buffer {
   return execFileSync(cmd, args, QUIET);
 }
 
-const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec('schtasks', args);
+const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec(windowsExecutable('schtasks'), args);
 const defaultRegRunner: RegRunner = (args) => quietExec('reg', args);
 
 /**
@@ -83,8 +86,23 @@ function indent(text: string, by = '    '): string {
   return text.split('\n').map(l => by + l).join('\n');
 }
 
+/**
+ * Working folder for a detached launch from the CLI: the fleet data dir (as
+ * 'apra-fleet start' uses), else the user's home -- never the folder the
+ * install/start command was run from, which the Run-key fallback's wrapper
+ * (and the server it starts) would otherwise inherit.
+ */
+export function detachedLaunchCwd(dataDir: string = FLEET_DIR): string {
+  try {
+    if (fs.statSync(dataDir).isDirectory()) return dataDir;
+  } catch { /* missing: use home */ }
+  return os.homedir();
+}
+
 function defaultSpawnDetached(cmd: string, args: string[], verbatim = false): void {
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: verbatim });
+  const child = spawn(cmd, args, {
+    detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: verbatim, cwd: detachedLaunchCwd(),
+  });
   child.unref();
 }
 
@@ -140,7 +158,7 @@ function xmlUnescape(s: string): string {
  * "any user" and needs elevation (verified in a Windows Sandbox spike, Win10 19041).
  */
 export function resolveTaskUserId(
-  whoami: () => string = () => decodeSchtasks(quietExec('whoami', [])),
+  whoami: () => string = () => decodeSchtasks(quietExec(windowsExecutable('whoami'), [])),
 ): string {
   return currentWindowsUser(whoami);
 }
@@ -693,7 +711,7 @@ export class WindowsServiceManager implements ServiceManager {
         if (fs.existsSync(launcher)) {
           this.spawnDetached(wscriptPath(this.env), ['//B', '//Nologo', '//E:JScript', launcher]);
         } else {
-          this.spawnDetached('cmd.exe', ['/d', '/s', '/c', `""${this.wrapperPath}""`], true);
+          this.spawnDetached(windowsExecutable('cmd.exe'), ['/d', '/s', '/c', `""${this.wrapperPath}""`], true);
         }
         return;
       }
@@ -715,7 +733,7 @@ export class WindowsServiceManager implements ServiceManager {
     }
     // Detached so schtasks /run does not block the installer (on some Windows
     // versions it waits for the launched process).
-    this.spawnDetached('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME]);
+    this.spawnDetached(windowsExecutable('schtasks'), ['/run', '/tn', WINDOWS_TASK_NAME]);
   }
 
   async stop(opts?: StopOptions): Promise<boolean> {
@@ -746,7 +764,7 @@ export class WindowsServiceManager implements ServiceManager {
       }
     }
     return gracefulStopByServerJson((pid) => {
-      try { quietExec('taskkill', ['/F', '/PID', String(pid)]); } catch {}
+      try { quietExec(windowsExecutable('taskkill'), ['/F', '/PID', String(pid)]); } catch {}
     });
   }
 

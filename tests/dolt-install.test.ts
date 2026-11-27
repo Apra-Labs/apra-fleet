@@ -433,6 +433,11 @@ function killableChild(opts: { killExits: boolean; pid?: number }) {
   return child;
 }
 
+// Host-independent: windowsExecutable resolves to a fixed absolute System32 path (as it does on win32).
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/os/windows-executable.js')>()),
+  windowsExecutable: (name: string) => `C:/Windows/System32/${name.replace(/\.exe$/i, '')}.exe`,
+}));
 describe('killChild: bounded dolt verify termination on every OS', () => {
   for (const platform of ['win32', 'linux', 'darwin'] as const) {
     it(`${platform}: child.kill() first; no tree kill when it exits; always unref`, async () => {
@@ -453,7 +458,7 @@ describe('killChild: bounded dolt verify termination on every OS', () => {
     const t0 = Date.now();
     await killChild(child as any, { platform: 'win32', execFileSync: exec as any, waitMs: 50, warn });
     expect(Date.now() - t0).toBeLessThan(2000);
-    expect(exec).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242'], expect.objectContaining({ windowsHide: true }));
+    expect(exec).toHaveBeenCalledWith('C:/Windows/System32/taskkill.exe', ['/F', '/T', '/PID', '4242'], expect.objectContaining({ windowsHide: true }));
     expect(child.unref).toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/\[!\].*pid 4242.*Stop-Process -Id 4242/));
   });

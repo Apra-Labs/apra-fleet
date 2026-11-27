@@ -75,6 +75,9 @@ import { buildHarvesterPrompt } from '../prompts.mjs';
  */
 export const SPRINT_ANALYSIS_EXCLUDE_PATTERN = 'docs/sprint-analysis-*.md';
 
+/** Run-state extension namespace carrying { text, generatedAt } for the analysis. */
+export const SPRINT_ANALYSIS_STATE_NAMESPACE = 'sprint-analysis';
+
 /**
  * Runs the Harvest phase: assemble the sprint-analysis inputs, dispatch the
  * harvester ladder, and log what it reported.
@@ -125,6 +128,9 @@ export async function runHarvestPhase({
     // exclude of the analysis document.
     command,
     memberSeCommands,
+    // The run's publishState (optional): the analysis text is published under
+    // SPRINT_ANALYSIS_STATE_NAMESPACE so it lands in the terminal run state.
+    publishState = undefined,
     // Defined BY runner.js; injected to avoid a circular import (see header).
     computeBranchSlug,
     buildAnalysisText,
@@ -174,6 +180,15 @@ export async function runHarvestPhase({
     // the sprint report ONLY: spend data stays out of the repository. The cost
     // block is returned below for Publish PR, which renders it in the PR body.
     const analysisText = reportText;
+    // Persist the analysis in the run state (running/ -> old_runs/), not the
+    // repo: the viewer keeps every published namespace in state.extensions.
+    if (typeof publishState === 'function') {
+        try {
+            publishState(SPRINT_ANALYSIS_STATE_NAMESPACE, { text: analysisText, generatedAt: new Date().toISOString() });
+        } catch (err) {
+            log(`Harvester: could not publish the sprint analysis to the run state: ${err && err.message ? err.message : err}`);
+        }
+    }
     const harvesterPrompt = buildHarvesterPrompt({
         branch: validated.branch,
         baseBranch: validated.baseBranch,
@@ -256,6 +271,18 @@ export async function runHarvestPhase({
     // the branch the bible commit lands on.
     if (kbWork && typeof kbWork.commitRound === 'function') {
         await kbWork.commitRound('harvest');
+    }
+    // The very last KB step before Publish PR: the harvester's commits (and
+    // the harvest bible commit above) are the sprint's last tree-changing
+    // commits, and they land AFTER the final review's re-check, so a docs
+    // edit to a file one of this sprint's own bible entries cites would leave
+    // that entry's recorded basis drifted at the pushed head. Re-check them
+    // here. No review is left to re-verify a drifted entry, so each one is
+    // dropped from the branch bible with a WARN naming it and its changed
+    // files (the KB entry itself is neither deleted nor demoted). Nothing
+    // tree-changing runs after this.
+    if (kbWork && typeof kbWork.recheckSprintBible === 'function') {
+        await kbWork.recheckSprintBible('post-harvest head', { noReviewLeft: true });
     }
     return { costAnalysis };
 }

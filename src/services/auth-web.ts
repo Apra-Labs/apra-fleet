@@ -1,6 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 import { logError } from '../utils/log-helpers.js';
 
 /**
@@ -37,7 +38,14 @@ function findBrowserOpener(): { cmd: string; args: string[] } | null {
     // mirrors hasInteractiveDesktop() in auth-socket.ts so the caller falls
     // through to the manual CLI instruction instead of spawning a no-op opener.
     if (process.env.SESSIONNAME !== 'Console') return null;
-    return { cmd: 'cmd', args: ['/c', 'start', ''] };
+    // An unresolvable cmd.exe (odd env: no SystemRoot, no usable PATH) is "no
+    // opener", like a headless session: the caller prints the manual instruction.
+    try {
+      return { cmd: windowsExecutable('cmd.exe'), args: ['/c', 'start', ''] };
+    } catch (err) {
+      logError('auth_web', `no browser opener: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
   }
   // Linux / BSD: needs a display and xdg-open
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;

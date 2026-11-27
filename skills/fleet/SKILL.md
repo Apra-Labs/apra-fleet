@@ -67,6 +67,7 @@ The `{{secret.NAME}}` pattern lets you reference stored secrets in any command w
 **When to use:**
 - Any API key, token, or password that a member needs in a shell command
 - Rotating credentials: `credential_store_delete` then `credential_store_set`  -  no re-provisioning required
+- A `long_running` task resolves `{{secret.NAME}}` once at launch: after rotating a secret it uses, restart the task (`monitor_task` warns and gives the stop step)
 - Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
 NOTE: **`{{secret.NAME}}` only resolves in specific credential fields** (listed above). Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the token string through literally  -  the secret will NOT be injected, and the raw handle name will be visible in logs. Only use `{{secret.NAME}}` in the fields documented above.
@@ -87,9 +88,9 @@ network access for commands that use it:
 
 | Policy | Behaviour |
 |--------|-----------|
-| `'allow'` (default) | No restriction |
-| `'deny'` | Commands invoking network tools (curl, wget, ssh, git push, etc.) are blocked |
-| `'confirm'` | OOB prompt before the network call is allowed |
+| `'allow'` | No restriction |
+| `'deny'` | Commands invoking network tools (curl, wget, ssh, scp, sftp, rsync, nc, http, fetch, Invoke-WebRequest, Invoke-RestMethod) or the git network subcommands `push`, `pull`, `fetch`, `clone`, `ls-remote`, `remote update` (also as `git.exe`, quoted, via `&`, or after global options such as `git -C dir push`) are blocked; `restart_command` is checked the same way. Local git (`status`, `log`, `commit`, `diff`, `add`) is not |
+| `'confirm'` (default) | OOB prompt before a network tool in `command` runs (unattended: blocked). The git-subcommand and `restart_command` checks are deny-only |
 
 ## Member Identification
 
@@ -124,6 +125,8 @@ Before dispatching any work:
 2. Member must have completed onboarding  -  see `onboarding.md`
 
 Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
+
+`member_detail` names why a member is busy: `session.statusSource` is `in-flight-dispatch` (a fleet dispatch from this server is running) or `fleet-process` (a fleet-launched CLI process for this member is alive on the host), with `session.busyPid`. To confirm a `fleet-process` busy by hand, probe that pid with `execute_command` on the member (POSIX: `ps -o pid=,args= -p <pid>`; Windows: `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select-Object ProcessId,CommandLine`): a fleet dispatch's command line names `.fleet-task.md`. Other processes of the same CLI name (your own interactive session in that folder) never count as busy.
 
 ## File Transfer
 

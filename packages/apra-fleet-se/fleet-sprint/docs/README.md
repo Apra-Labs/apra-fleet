@@ -240,8 +240,9 @@ with `--ignore-running-sprints` while a sprint was live), the ledger is
 already empty, so the curl above answers `404 no live reservation for
 sprint '<id>'` -- that axis is clear, skip it. The 409 then comes only from
 the fleet server's `reservedBy`, and the name it prints is whatever id the
-dead sprint reserved with (often its branch name), so it does not appear in
-`GET /api/sprints`. Run the `member_reservation` force_release above once
+dead sprint reserved with: the supervisor sprint id for a supervisor launch
+(the child reserves under its `--run-id`), the branch name for a direct CLI
+launch or an older version, so it may not appear in `GET /api/sprints`. Run the `member_reservation` force_release above once
 per member listed in the 409. It is a fleet MCP tool (call it from your
 agent); the supervisor has no HTTP route for it. See `packages/apra-fleet-se/docs/architecture.md` ("Supervisor:
 process model" / "Manual force-release") for the full mechanism.

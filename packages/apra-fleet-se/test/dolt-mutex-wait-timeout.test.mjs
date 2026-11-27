@@ -189,8 +189,8 @@ describe('dolt mutex acquire -- failures stay loud', () => {
         await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
         const { port } = probe.address();
         await new Promise((resolve) => probe.close(resolve));
-        const client = createHttpDoltPushMutexClient({ serviceUrl: `http://127.0.0.1:${port}`, sprintId: 'waiter' });
-        await assert.rejects(client.acquire('waiter'), /fetch failed/);
+        const client = createHttpDoltPushMutexClient({ serviceUrl: `http://127.0.0.1:${port}`, sprintId: 'waiter', supervisorWaitMs: 300, supervisorBackoffMs: 100 });
+        await assert.rejects(client.acquire('waiter'), new RegExp(`supervisor at http://127\\.0\\.0\\.1:${port} is not answering`));
     });
 
     test('a supervisor that dies mid-wait rejects the waiter', async () => {

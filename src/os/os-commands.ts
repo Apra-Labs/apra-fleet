@@ -15,6 +15,17 @@ export const GIT_LS_REMOTE_OK_MARKER = 'FLEET_GIT_LS_REMOTE_OK';
  */
 export const FLEET_ENV_MARKER = 'apra-fleet-managed';
 
+/**
+ * The prompt file every execute_prompt dispatch names in the CLI instruction
+ * ("Your task is described in .fleet-task.md ..."), so it appears in the argv
+ * of both the dispatched CLI process and its wrapper shell. fleetProcessCheck
+ * keys on it to tell a fleet-launched CLI apart from any other process of the
+ * same name (an operator's own interactive session, a provider helper that
+ * carries the workspace path, ...). Must equal promptFileName in
+ * src/tools/execute-prompt.ts (guarded by tests/member-detail-status.test.ts).
+ */
+export const FLEET_TASK_PROMPT_FILE = '.fleet-task.md';
+
 export interface UnsetEnvOptions {
   /**
    * Remove EVERY `export NAME=` profile line, marked or not. Only for an
@@ -35,6 +46,27 @@ export function unsetEnvSedExpr(name: string, opts?: UnsetEnvOptions): string {
   return opts?.all
     ? `/export ${name}=/d`
     : `/^[[:space:]]*export ${name}=.*# ${FLEET_ENV_MARKER}/d`;
+}
+
+/**
+ * POSIX members keep a persisted var in its own owner-only file (mode 0600,
+ * dir 0700), never in a shared shell profile (often 0644): the profile holds
+ * only envSourceLine(), which carries the path and no secret. `$HOME` stays
+ * literal -- the member's shell expands it.
+ */
+export const FLEET_ENV_DIR = '$HOME/.apra-fleet/env';
+
+/** The profile line that loads NAME's owner-only file (no value in it). */
+export function envSourceLine(name: string): string {
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+  const f = `"${FLEET_ENV_DIR}/${name}"`;
+  return `if [ -r ${f} ]; then . ${f}; fi # ${FLEET_ENV_MARKER}`;
+}
+
+/** sed address+command that removes envSourceLine(name) (exact name: the closing quote ends it). */
+export function envSourceLineSedExpr(name: string): string {
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+  return `/\\.apra-fleet\\/env\\/${name}".*# ${FLEET_ENV_MARKER}/d`;
 }
 
 /**
@@ -86,6 +118,13 @@ export interface OsCommands {
   disk(folder: string): string;
 
   // --- Process check ---
+  /**
+   * Member-side probe for a fleet-launched CLI process. Prints exactly one of:
+   * `idle` (no process of that name), `fleet-busy <pid>` (a process whose argv
+   * carries the fleet dispatch marker FLEET_TASK_PROMPT_FILE AND either the
+   * session id or the exact, quoted work folder), or `other-busy` (only
+   * unrelated processes of that name -- reported idle by callers).
+   */
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string;
 
   // --- Generic agent CLI (provider-agnostic) ---
@@ -124,9 +163,10 @@ export interface OsCommands {
   persistEnvFileContent(name: string, value: string): string;
   persistEnvFromFile(name: string, filePath: string): string;
   /**
-   * Commands that remove a persisted env var. POSIX shells: by default only
-   * the profile lines carrying FLEET_ENV_MARKER (a hand-written export of the
-   * same NAME is left in place); `{ all: true }` removes every
+   * Commands that remove a persisted env var. POSIX shells: the owner-only
+   * env file and its profile source line always go; of the export lines, by
+   * default only those carrying FLEET_ENV_MARKER (a hand-written export of
+   * the same NAME is left in place); `{ all: true }` removes every
    * `export NAME=` line. Windows PowerShell persists to a User env var, which
    * cannot carry a marker -- `all` has no effect there and the caller must
    * decide (from its own delivery record) whether to unset at all.

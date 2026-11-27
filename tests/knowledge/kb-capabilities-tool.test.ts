@@ -13,6 +13,30 @@ import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js
 import { kbCapabilities } from '../../src/tools/kb-capabilities.js';
 import { registerAllTools } from '../../src/services/tool-registry.js';
 import { KB_REMOVED_SCOPE_KEYS } from '../../src/services/knowledge/kb-removed-scope-keys.js';
+import { BIBLE_RULES_REVISION, fleetBuild } from '../../src/services/knowledge/bible-rules.js';
+import { serverVersion } from '../../src/version.js';
+
+/**
+ * The tool answer without fleet's own fleet_build field, after asserting that
+ * field is this build's identity (every answer carries it, both providers).
+ */
+function stripBuild(text: string): Record<string, unknown> {
+  const parsed = JSON.parse(text);
+  expect(parsed.fleet_build).toEqual({ version: serverVersion, bible_rules: BIBLE_RULES_REVISION });
+  const { fleet_build: _build, ...rest } = parsed;
+  return rest;
+}
+
+describe('kb_capabilities fleet_build', () => {
+  it('reports this build and a bible rules revision equal to the sprint engine requirement', async () => {
+    expect(fleetBuild()).toEqual({ version: serverVersion, bible_rules: BIBLE_RULES_REVISION });
+    expect(Number.isInteger(BIBLE_RULES_REVISION) && BIBLE_RULES_REVISION >= 1).toBe(true);
+    // The engine refuses a maintainer below its required revision: the two
+    // constants move together, so a fresh build always passes its own gate.
+    const engine = await import('../../packages/apra-fleet-se/fleet-sprint/kb.mjs');
+    expect(engine.REQUIRED_MAINTAINER_BIBLE_RULES).toBe(BIBLE_RULES_REVISION);
+  });
+});
 
 // kb_capabilities end to end: what the calling session's project KB serves,
 // in the shape of GET /api/kb/capabilities.
@@ -87,7 +111,7 @@ describe('kb_capabilities against the sample kb-server and a SQLite KB', () => {
     const provider = new HttpKbProvider(serverUrl, TOKEN, { projectSlug: project });
     try {
       useProject(provider);
-      const viaTool = JSON.parse(await kbCapabilities({}, ANCHOR));
+      const viaTool = stripBuild(await kbCapabilities({}, ANCHOR));
       const direct = await directGet();
       expect(viaTool).toEqual(direct);
       // Non-vacuous: the server's answer carries the routes the default set lacks.
@@ -107,7 +131,7 @@ describe('kb_capabilities against the sample kb-server and a SQLite KB', () => {
     try {
       await provider.init();
       useProject(provider);
-      const caps = JSON.parse(await kbCapabilities({}, ANCHOR));
+      const caps = stripBuild(await kbCapabilities({}, ANCHOR));
       expect(caps.contract).toBe('v1');
       expect(caps.routes).toEqual(expect.arrayContaining(['withdraw', 'demote']));
       expect(caps.branch_aware).toBe(false);
@@ -164,7 +188,7 @@ describe('kb_capabilities over HTTP against a server whose capabilities answer t
       server_build: 'example-build-7',
     };
     answer = { status: 200, body };
-    expect(JSON.parse(await kbCapabilities({}, ANCHOR))).toEqual(body);
+    expect(stripBuild(await kbCapabilities({}, ANCHOR))).toEqual(body);
     // The normalized view used for route gating drops what the tool keeps.
     const normalized = await provider.capabilities();
     expect(normalized.routes).not.toContain('future-route');
@@ -173,7 +197,7 @@ describe('kb_capabilities over HTTP against a server whose capabilities answer t
 
   it.each([404, 501])('a server without the route (HTTP %i) yields the documented default set', async (status) => {
     answer = { status, body: { error: 'no such route' } };
-    const caps = JSON.parse(await kbCapabilities({}, ANCHOR));
+    const caps = stripBuild(await kbCapabilities({}, ANCHOR));
     expect(caps).toEqual(JSON.parse(JSON.stringify(KB_DEFAULT_CAPABILITIES)));
     expect(caps.routes).not.toContain('demote');
     expect(caps.routes).not.toContain('withdraw');
@@ -188,7 +212,7 @@ describe('kb_capabilities over HTTP against a server whose capabilities answer t
   ])('a query_filters that is %s is dropped: the server honours no filter (tool and route gating agree)', async (_label, malformed) => {
     const body = { contract: 'v1', routes: ['capture', 'query', 'promote'], branch_aware: false, query_filters: malformed, server_build: 'b1' };
     answer = { status: 200, body };
-    const caps = JSON.parse(await kbCapabilities({}, ANCHOR));
+    const caps = stripBuild(await kbCapabilities({}, ANCHOR));
     expect(caps).toEqual({ contract: 'v1', routes: ['capture', 'query', 'promote'], branch_aware: false, server_build: 'b1' });
     expect(caps).not.toHaveProperty('query_filters');
     expect(await provider.capabilities()).not.toHaveProperty('query_filters');

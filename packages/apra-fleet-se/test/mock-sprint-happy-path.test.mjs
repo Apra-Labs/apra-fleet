@@ -101,10 +101,14 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // The backlog member's VCS-credential preflight (before its first
         // beads D-pull) adds one `git remote get-url origin` repo probe.
         const PREFLIGHT_PROBE = 'git remote get-url origin';
+        // The gate first lists the backlog member's work folder for a beads
+        // recovery backup an interrupted flattened-remote recovery left
+        // behind (beads-flatten-recovery.mjs).
+        const LEFTOVER_PROBE = "ls -1A -- '.'";
         const firstGitIdx = run1.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c) && c !== PREFLIGHT_PROBE);
         check(firstGitIdx > identityEnd, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
         check(
-            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull' || c === PREFLIGHT_PROBE),
+            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull' || c === PREFLIGHT_PROBE || c === LEFTOVER_PROBE),
             `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(identityEnd, firstGitIdx))}`
         );
         // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh

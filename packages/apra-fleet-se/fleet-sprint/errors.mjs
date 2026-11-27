@@ -76,6 +76,7 @@ export const VCS_FAILURE_KINDS = Object.freeze({
     NO_REMOTE: 'NO_REMOTE',
     EMPTY_REMOTE: 'EMPTY_REMOTE',
     REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
+    UNRELATED_HISTORY: 'UNRELATED_HISTORY',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
     MISSING_TOOL: 'MISSING_TOOL',
     UNKNOWN: 'UNKNOWN',
@@ -118,6 +119,41 @@ export class SprintPlanRejectedError extends WorkflowError {
             cause,
         });
         this.notes = notes;
+    }
+}
+
+/** Stable code of SprintBlockedOnOperatorError. */
+export const SPRINT_BLOCKED_ON_OPERATOR_CODE = 'SPRINT_BLOCKED_ON_OPERATOR';
+/** The terminalReason a run that ended blocked on an operator is recorded under. */
+export const BLOCKED_ON_OPERATOR_TERMINAL_REASON = 'BLOCKED_ON_OPERATOR';
+
+/**
+ * Thrown when planning cannot go on until an operator answers a question (the
+ * planner reported BLOCKED, or every remaining in-scope bead is held by an
+ * open decision gate) and the run has no pause/resume channel to wait on. It
+ * is NOT a plan rejection and NOT a crash: an operator answering the decision
+ * is exactly what unblocks a relaunch.
+ *
+ * @property {string|null} question - the operator question
+ * @property {string[]} beadIds - the bead(s) the question holds
+ * @property {string|null} decisionBeadId - the decision bead filed for it, when one was
+ */
+export class SprintBlockedOnOperatorError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ question?: string|null, beadIds?: string[], decisionBeadId?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { question = null, beadIds = [], decisionBeadId = null, details, cause } = opts;
+        super(message, {
+            code: SPRINT_BLOCKED_ON_OPERATOR_CODE,
+            details: { question, beadIds, decisionBeadId, ...details },
+            cause,
+        });
+        this.name = 'SprintBlockedOnOperatorError';
+        this.question = question;
+        this.beadIds = beadIds;
+        this.decisionBeadId = decisionBeadId;
     }
 }
 
@@ -415,6 +451,50 @@ export function isDoltCredentialFailure(err) {
     return false;
 }
 
+/** Stable error code of SupervisorUnreachableError. */
+export const SUPERVISOR_UNREACHABLE_CODE = 'SUPERVISOR_UNREACHABLE';
+
+/**
+ * The fleet-sprint supervisor's HTTP service (dolt push mutex, child-id
+ * allocator) could not be reached: either every connection attempt was
+ * refused for the whole wait budget, or the connection failed at the
+ * transport level (reset / hang-up). Infrastructure, never a credential
+ * failure -- the remedy names the supervisor so the operator does not chase
+ * a remote or credential that is fine.
+ *
+ * @property {string} serviceUrl - the supervisor URL that did not answer
+ */
+export class SupervisorUnreachableError extends WorkflowError {
+    /**
+     * @param {string} serviceUrl
+     * @param {{ detail?: string, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(serviceUrl, opts = {}) {
+        const { detail, details, cause } = opts;
+        super(
+            `The fleet-sprint supervisor at ${serviceUrl} is not answering${detail ? ` (${detail})` : ''} -- start it (see the fleet-supervisor skill) and re-run.`,
+            { code: SUPERVISOR_UNREACHABLE_CODE, details: { serviceUrl, ...details }, cause },
+        );
+        this.name = 'SupervisorUnreachableError';
+        this.serviceUrl = serviceUrl;
+    }
+}
+
+/**
+ * True when `err` (or an error on its `cause` chain) is a
+ * SupervisorUnreachableError.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isSupervisorUnreachableFailure(err) {
+    const seen = new Set();
+    for (let e = err; e && typeof e === 'object' && !seen.has(e); e = e.cause) {
+        seen.add(e);
+        if (e instanceof SupervisorUnreachableError) return true;
+    }
+    return false;
+}
+
 /** Stable error code of DoltWindowsSpawnLimitError. */
 export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
 
@@ -438,6 +518,82 @@ export class DoltWindowsSpawnLimitError extends DoltSyncError {
     }
 }
 
+/** Stable error code of DoltUnrelatedHistoryError. */
+export const DOLT_UNRELATED_HISTORY_CODE = 'DOLT_UNRELATED_HISTORY';
+
+/** The failure kind DoltUnrelatedHistoryError carries in details.kind. */
+export const DOLT_UNRELATED_HISTORY_KIND = 'unrelated-history';
+
+/**
+ * A D-pull/D-push whose beads clone and the shared remote have NO common
+ * ancestor (independent histories: e.g. a clone created with its own `bd init`,
+ * or a remote whose history was rewritten). Not an ordinary divergence: a
+ * settle (merge) needs a common ancestor, so none is attempted. The raw output
+ * is in `doltOutput`; details.kind is 'unrelated-history' and details.operation
+ * is 'pull' | 'push'. A DoltSyncError subtype, so every existing DoltSyncError
+ * handler still applies -- and it is deliberately NOT a DoltDivergedError, so
+ * nothing treats it as a settle-able conflict.
+ */
+export class DoltUnrelatedHistoryError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'DoltUnrelatedHistoryError';
+        this.code = DOLT_UNRELATED_HISTORY_CODE;
+    }
+}
+
+/** Stable error code of BeadsFlattenRecoveryRefusedError. */
+export const BEADS_FLATTEN_RECOVERY_REFUSED_CODE = 'BEADS_FLATTEN_RECOVERY_REFUSED';
+
+/** Stable error code of BeadsFlattenRecoveryFailedError. */
+export const BEADS_FLATTEN_RECOVERY_FAILED_CODE = 'BEADS_FLATTEN_RECOVERY_FAILED';
+
+/**
+ * The automatic recovery of a clone whose shared beads remote shares no
+ * history with it (beads-flatten-recovery.mjs) found local work the rewritten
+ * remote does not hold, so it REFUSED: the clone was put back exactly as it
+ * was and nothing was replayed. `details.localOnly` lists
+ * `{ id, kind, reason, localUpdatedAt?, freshUpdatedAt?, items?, unverified? }`
+ * (kind: absent | changed | dependency | label | comment | deleted),
+ * `details.exportPath` the
+ * pre-recovery export of the clone. A DoltSyncError subtype (kind
+ * 'unrelated-history'), so every existing DoltSyncError handler applies.
+ */
+export class BeadsFlattenRecoveryRefusedError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'BeadsFlattenRecoveryRefusedError';
+        this.code = BEADS_FLATTEN_RECOVERY_REFUSED_CODE;
+    }
+}
+
+/**
+ * The automatic recovery of an unrelated-history clone failed on a step
+ * (export, rename, bootstrap, ...). Every step after the clone's .beads was
+ * moved aside is undone before this is thrown; `details.step` names the
+ * failed step and `details.restored` whether the original .beads is back in
+ * place. A DoltSyncError subtype (kind 'unrelated-history').
+ */
+export class BeadsFlattenRecoveryFailedError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'BeadsFlattenRecoveryFailedError';
+        this.code = BEADS_FLATTEN_RECOVERY_FAILED_CODE;
+    }
+}
+
 /** Stable error code of DoltLockHeldError. */
 export const DOLT_BEADS_LOCK_HELD_CODE = 'DOLT_BEADS_LOCK_HELD';
 
@@ -458,6 +614,29 @@ export class DoltLockHeldError extends DoltSyncError {
         super(message, { ...opts, details: { kind: 'lock-held', ...opts.details } });
         this.name = 'DoltLockHeldError';
         this.code = DOLT_BEADS_LOCK_HELD_CODE;
+    }
+}
+
+/** Stable error code of DoltSyncTimeLimitError. */
+export const DOLT_SYNC_TIME_LIMIT_CODE = 'DOLT_SYNC_TIME_LIMIT';
+
+/**
+ * A D-pull/D-push that was still running when its total time limit ran out
+ * (the heartbeat that keeps a long, silent transfer alive stops at the limit,
+ * then the silence timeout ends it). Not retried: the transfer is too large or
+ * too slow, and the same transfer would hit the same limit again. details.kind
+ * is 'time-limit'; details.limitS / details.elapsedS carry the numbers. A
+ * DoltSyncError subtype, so every existing DoltSyncError handler still applies.
+ */
+export class DoltSyncTimeLimitError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'time-limit', ...opts.details } });
+        this.name = 'DoltSyncTimeLimitError';
+        this.code = DOLT_SYNC_TIME_LIMIT_CODE;
     }
 }
 
@@ -610,6 +789,54 @@ export function isAuthDispatchError(err) {
     const reason = err?.details?.reason;
     if (reason === 'auth' || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
     return AUTH_DISPATCH_RE.test(String(err?.message ?? ''));
+}
+
+// apra-fleet-3b8p.1: a failed LLM-auth self-heal is TERMINAL for the dispatch
+// ladder that attempted it. The heal (provision_llm_auth) already ran once;
+// when it did not confirm working credentials -- the call failed, the member
+// is local (only an interactive /login refreshes it), or the server's
+// post-deploy auth test failed (reason 'deployed_unverified', e.g. a revoked
+// OAuth token) -- no retry, backoff wait or later attempt can succeed, so the
+// ladder throws this error at once, naming the member, the cause and the fix.
+export const LLM_AUTH_SELF_HEAL_FAILED_CODE = 'LLM_AUTH_SELF_HEAL_FAILED';
+export const LLM_AUTH_SELF_HEAL_REMEDY = 'the owner must re-login with /login on the source machine, then re-run provision_llm_auth (or provision an API key)';
+
+/**
+ * Thrown by the dispatch retry ladder when an LLM-auth failure's one bounded
+ * self-heal did not heal it. Carries the member, the heal's cause (for a
+ * failed post-deploy auth test: the server's Auth test line verbatim) and
+ * the remedy. The message keeps the original dispatch error text, so a caller
+ * reading only `.message` still sees the auth failure itself.
+ *
+ * @property {string|null} member
+ * @property {string|null} roleLabel
+ * @property {string|null} reason - the heal outcome's reason (e.g. 'deployed_unverified')
+ * @property {string} healCause - why the heal did not heal
+ * @property {string} remedy
+ */
+export class LlmAuthSelfHealFailedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, roleLabel?: string|null, reason?: string|null, healCause?: string, remedy?: string, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const {
+            member = null, roleLabel = null, reason = null,
+            healCause = 'provision_llm_auth did not heal the LLM auth failure',
+            remedy = LLM_AUTH_SELF_HEAL_REMEDY, details, cause,
+        } = opts;
+        super(message, {
+            code: LLM_AUTH_SELF_HEAL_FAILED_CODE,
+            details: { member, roleLabel, healReason: reason, healCause, remedy, ...details },
+            cause,
+        });
+        this.name = 'LlmAuthSelfHealFailedError';
+        this.member = member;
+        this.roleLabel = roleLabel;
+        this.reason = reason;
+        this.healCause = healCause;
+        this.remedy = remedy;
+    }
 }
 
 // ---------------------------------------------------------------------------

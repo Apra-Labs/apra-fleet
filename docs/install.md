@@ -465,7 +465,7 @@ Pre-check (before the numbered steps). Look for a running fleet-sprint
    `E-FLEET-SE-RUNNING`):
 
    ```bash
-   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d "{}"
+   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d '{}'
    ```
 
 0. Stop the server with the INSTALLED binary and check that it is down (a live
@@ -545,6 +545,36 @@ e. Run the STAGED current installer (not the old binary, which predates the
 f. On the orchestrator, for every member on that Unix user run `update_member`
    with `fleet_install: "auto"`. Each member self-registers its own uuid on the
    new member install.
+
+### What the automated replace-full does on Windows and with a supervisor
+
+The automated path (`update_member` with `fleet_install: "auto"`) enforces the
+following so the manual steps above are not needed in the common cases:
+
+- **Locked installed exe.** On Windows an installed `apra-fleet.exe` that a
+  running process has open cannot be deleted. Replace-full probes it up front
+  (step 1b, refusal reason `exe-locked`) and `apra-fleet uninstall` checks it
+  with retries before removing anything; both refuse with exit 1 and remedies
+  while nothing has been deleted. Step 2 still runs from the backup copy of the
+  binary. When uninstall runs from elsewhere, the probe opens the file
+  read-write with no sharing, which fails with EBUSY / a sharing violation
+  while any process runs the image. When uninstall runs from the installed exe
+  itself (the usual case), that probe cannot tell its own handle from another's,
+  so it instead refuses (`E-UNINSTALL-EXE-IN-USE`, naming the pids) when another
+  `apra-fleet.exe` process runs that same path; a holder that is not an
+  `apra-fleet.exe` process, or whose path cannot be read, is not detected there.
+- **Idle supervisor.** An idle fleet-sprint supervisor is stopped in step 0
+  (the `ApraFleetSupervisor` scheduled task is ended, or the Linux user unit is
+  stopped, then `POST /api/shutdown` and a wait), checked again, and restarted
+  after the replacement. A live sprint makes the replacement refuse up front.
+  Every rollback from step 2 onward begins with the supervisor stop and ends
+  with its restart. If the old uninstall already removed the task or unit, the
+  restart reports that as a note, not a failure.
+- **`claude mcp remove`** runs on Windows from an absolute path with argv, never
+  through `cmd.exe`, so a `claude.cmd` planted in the working folder cannot run.
+
+Known limit: the member-newer-than-orchestrator downgrade guard is not part of
+this; `isMemberOutdated` still treats any version difference as outdated.
 
 ### Verify
 

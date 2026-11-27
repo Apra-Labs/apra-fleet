@@ -356,7 +356,7 @@ Calls `execute_command` -- runs a shell command on a member. Same
 
 | Field | Type | Notes |
 |---|---|---|
-| `command` | `string` | The shell command to execute. Multi-line commands and heredocs are supported; on POSIX members (linux, macos, windows Git Bash) the whole command runs inside the member work folder (or `run_from`), and a syntax error in it is reported as `eval: line N: ...` on stderr. |
+| `command` | `string` | (A referenced `{{secret.NAME}}` with `network_policy: deny` blocks the call when `command` or `restart_command` uses a network tool (curl, wget, ssh, scp, sftp, rsync, nc, netcat, http, fetch, Invoke-WebRequest, Invoke-RestMethod) or a git network subcommand: `push`, `pull`, `fetch`, `clone`, `ls-remote`, `remote update`, also as `git.exe`, quoted, via `&`, or after global options such as `git -C dir push`; local git such as `status`/`log`/`commit`/`diff` is allowed. `confirm` (the default) asks for approval only when `command` itself uses one of the network tools; the git-subcommand and `restart_command` checks are deny-only.) The shell command to execute. Multi-line commands and heredocs are supported; on POSIX members (linux, macos, windows Git Bash) the whole command runs inside the member work folder (or `run_from`), and a syntax error in it is reported as `eval: line N: ...` on stderr. |
 | `long_running` | `boolean?` | Run as a background task. Supported on linux and windows (windows launches detached via `Invoke-CimMethod Win32_Process.Create`, session 0); darwin gets an advisory warning only. |
 | `max_retries` | `number?` | Max crash retries (long-running only). |
 | `member_id` | `string?` | UUID of the member. |
@@ -377,6 +377,16 @@ the unit tests -- calling with no arguments sends an empty object, not
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
 | `tags` | `string[]?` | Filter members by tags (AND semantics). |
+
+Each member's `llm_auth` (compact: `llm-auth=`) is `N/A` for local and relay
+members, `offline` when the member cannot be reached, or the credential label
+`member_detail` reports as `llm_cli.auth` (below): `none`, or the sources
+present joined with `+` in this fixed order -- `api-key` (an API-key env var),
+`oauth-token` (an OAuth/setup-token env var, e.g. Claude's
+`CLAUDE_CODE_OAUTH_TOKEN`), `oauth-login` (the provider's OAuth credentials
+file). Examples: `oauth-token`, `api-key+oauth-login`,
+`oauth-token+oauth-login`. A provider that does not classify its env vars
+(`authEnvVarKind`) reports each as `api-key`.
 
 #### `fleetSnapshot()`
 
@@ -432,6 +442,24 @@ session (`session.id`, the current session ID or `null`), work folder
 | `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
 
 `fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?, fleetInstalledAt?, installFailure?, beads?, port?, portSource?, replacedFullInstall?, manualInstall?, sameCoreFallback?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server; `fleetInstalledAt` is the ISO 8601 time this fleet's own install last succeeded on the member (absent if it never did). `installFailure` (`{reason, detail?}`) is set when a requested upgrade failed before the member was touched and the older install stayed in use (also named in `detail`; `fleetMcpFix` then carries the upgrade fix even when `available`). `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line. `beads` (`{state: "missing"|"broken"|"version-mismatch", detail, fix}`) is present only when the bd CLI is not usable on a remote member (neither on its PATH nor in `<home>/.apra-fleet/bin`), or runs but is off the pinned major.minor (`version-mismatch`, `E-BD-VERSION-MISMATCH`; re-probed on every refresh); it is independent of `state`, and the text output prints it as `bd=` and `bd fix:` lines. `port` is the remote member install's port from its member-install marker (`portSource` `"marker"`, or `"default"` when the install recorded none). `replacedFullInstall` (`{previousVersion, removed, backupPath}`) is set by the probe that replaced a full install with a member install (`fleet_install` `"replace-full"`): the replaced version, what was removed or moved, and the timestamped backup directory on the member. `manualInstall` (`string`) is set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. `no-matching-release`): the OS-correct manual steps (anonymous release download URL, SHA-256 check against the release SHA256SUMS, member-mode install, then `update_member`). `sameCoreFallback` (`{tag, wantedBuild, why}`) is set when no release carries the exact orchestrator build and the member had no apra-fleet or an older core, so the signed stable release of the same core was installed instead (a NOTICE in the register/update result); never across cores.
+
+`llm_cli.auth` is the same credential label `list_members` reports as
+`llm_auth` (`none`, or `+`-joined `api-key` / `oauth-token` / `oauth-login`, in
+that order). `llm_cli.authNote` names the source the CLI uses when more than one
+is present (e.g. `api-key takes precedence over oauth-login`), `null` otherwise;
+the compact output prints it in parentheses after `auth=`.
+
+`session.status` is `busy`, `idle`, `idle (unrelated <cli> processes running)` or `unknown`
+(probe failed). `session.statusSource` names the signal that produced `busy` and is `null`
+otherwise: `"in-flight-dispatch"` (this server has an `execute_prompt` running for the member) or
+`"fleet-process"` (the member-side probe found a fleet-launched CLI process: its command line
+carries the dispatch prompt file `.fleet-task.md` plus the member's session id or its quoted work
+folder -- e.g. a dispatch started by another fleet server). `session.busyPid` is the pid behind
+that signal (the stored dispatch pid, or the matched process), `null` when none was captured.
+Processes of the same CLI name that fleet did not launch (an operator's own session in the work
+folder, a sibling folder sharing the path prefix, a provider helper carrying the workspace path)
+never make a member busy. The compact output prints it as `session=<id> (busy via <source>
+pid=<pid>)`. `list_members` reports no busy state; use `member_detail` or `fleet_status`.
 
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
@@ -640,21 +668,25 @@ or a member `kb_query` `own_scope` read when the server does not list `demote`, 
 the KB server does not list in `GET /api/kb/capabilities` or answers 404/501;
 the message names the route and nothing is changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
 different project; nothing is read or written), `E-KB-HTTP-UNREACHABLE`
-(the KB server cannot be reached, or answered 429 or 503; nothing is queued,
-no read is answered from a local store or the bible, and the code is
-retryable: the caller decides whether to repeat the call) and
-`E-KB-HTTP-SERVER-ERROR` (the KB server answered with another 5xx: for a
-capture, invalidate, feedback, promote or demote whether it took effect is
-unknown, so it is neither retried nor queued; for a query, context, prime or
-list nothing was read).
+(the KB server cannot be reached, answered a write 429 or 503, or answered a
+query, context, prime or list read 429 or any 5xx; nothing is queued, no read
+is answered from a local store or the bible, and the code is retryable: the
+caller decides whether to repeat the call. A 429 message says the server rate
+limited the request and names the `Retry-After` value when the answer carried
+one) and `E-KB-HTTP-SERVER-ERROR` (the KB server answered a capture,
+invalidate, feedback, promote or demote with another 5xx: whether it took
+effect is unknown, so it is neither retried nor queued; a read never raises
+it).
 
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_invalidate`,
-`kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes
-its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
-secret is missing, expired, or still rejected (HTTP 401) after one re-read and
-retry. The message names the secret and the reason, never the value. Nothing
-is queued. Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
-restart.
+`kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB
+token is not accepted. For a token from a named fleet secret (`kb_setup` token
+`{{secret.NAME}}`): the secret is missing, expired, or still rejected (HTTP 401)
+after one re-read and retry; fix: `apra-fleet secret --set NAME --persist -y`
+-- the next call uses it, no restart. For a literal token stored in the KB
+config: the server answered HTTP 401 (reason `rejected`, no retry); fix: run
+`kb_setup` again with a token the server accepts. The message names the secret
+(if any) and the reason, never the value. Nothing is queued.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit
@@ -725,7 +757,10 @@ entries are skipped and listed in `skipped` with reason
 `not_confirmed_or_unknown`; a CONFIRMED id that fails the same basis rule
 `kb_export` applies (a cited file changed or absent at the repo's HEAD commit --
 uncommitted edits never change the verdict -- or no basis) is skipped
-with reason `basis_mismatch` and any existing bible entry for it is kept; a
+with reason `basis_mismatch` and any existing bible entry for it is kept (the
+skip carries `changed_files: [{path, reason}]`, reason `changed`, `absent` or
+`no_basis`, naming each file behind the mismatch; re-verifying the entry with
+`kbPromote` re-stamps its basis at HEAD); a
 CONFIRMED id citing no source file is skipped with its own reason
 `no_source_files` (its existing bible entry is kept too); no mergeable ids or an unchanged
 entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
@@ -815,6 +850,28 @@ Result JSON: `{l1_results, l2_expanded, related_claims?}`, or
 `{flagged_entries, total, note}` with `flagged_only`; member-session defaults
 as described above.
 
+#### `kbPromote(options: KbPromoteOptions)`
+
+Calls `kb_promote` -- raises an entry one tier (UNVERIFIED -> INFERRED ->
+CONFIRMED). Options: `id` (required), `reason` (the evidence checked, appended
+to the entry content as the audit trail; the server refuses a promotion without
+a non-trivial reason). In a git work tree the entry's source-file basis is
+stamped from the cited files at the HEAD commit; a file with no blob at HEAD or
+whose work tree differs from HEAD is not stamped, keeps its previous hash and
+is listed in `unstamped_files` (so an uncommitted edit never enters the basis). On an already-CONFIRMED entry the call is an explicit
+re-verification: a basis that drifted from HEAD is re-stamped (`rebased: true`)
+so a following `kbBibleCommit` admits it; otherwise nothing changes
+(`rebased: false`). A member session is served `kb_promote` only with the
+kb_maintainer grant. Over a remote (http) KB a server whose reply carries no
+`basis_stamped` leaves the basis as it was, stated in `basis_stamp_unsupported`.
+Like `kbExport` / `kbBibleCommit`, the removed scope keys (`repo_path`, `repo`,
+`repo_remote_url`) are refused client-side with `E-SCOPE-KEY-REMOVED` before
+anything is sent.
+
+Result JSON (`KbPromoteResult`): `{id, previous_confidence, new_confidence,
+basis_stamped?, rebased?, previous_basis_files_changed?, unstamped_files?,
+basis_stamp_unsupported?}`.
+
 #### `kbDemote(options: KbDemoteOptions)`
 
 Calls `kb_demote` -- withdraws trust from a CONFIRMED entry, lowering it to
@@ -852,7 +909,12 @@ body passed through as sent (unknown route names and extra fields kept; a
 server that does not serve the route yields the default set (`capture`,
 `query`, `promote`, `context`, `prime`, `invalidate`, `feedback`, `list` --
 no `demote` or `withdraw`). Over a local SQLite KB it is the set the sample
-kb-server answers. Extract with `parseToolJson()`.
+kb-server answers. Both answers also carry fleet's own
+`fleet_build: {version: string, bible_rules: number}` -- the build of the
+fleet server answering (not of the KB server) and the revision of the bible
+format and `kb_bible_commit` rules it implements; a caller about to run
+`kb_bible_commit` on a member refuses a missing or lower `bible_rules` than it
+requires. Extract with `parseToolJson()`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 
@@ -865,6 +927,13 @@ order. Options: `member_id?`, `member_name?`, `role?`
 `grant_reason?`, `dry_run?`. `dry_run: true` returns the composed allow list
 (role/tags + detected stacks, + the ledger when `project_folder` is given) as
 JSON text `{"dry_run":true,"mode","stacks","allow"}` and writes nothing.
+For a claude member, `grant` mode merges the grants into the existing
+`.claude/settings.local.json` allow list; when that file is missing/empty,
+not valid JSON, or has no `permissions.allow` list, the base role profile
+(`base-dev`/`base-reviewer`, plus detected stacks and ledger) is re-seeded
+first and the grants are merged onto it, and the response says so (a
+`Base profile re-seeded (... cause: missing|unparseable|no_allow_list)`
+line) instead of silently writing a grant-only allow list.
 Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
@@ -998,7 +1067,11 @@ node ids are not unique (an incremental analyze corrupted it) carries
 `index_integrity` (`{ corrupt: true, damaged_rows, rebuild }`, where `rebuild` is
 `{ started: true }` or `{ started: false, reason, detail? }`, plus `pause` when
 `reason` is `paused`) and `confidence: 'LOW'`,
-plus a warning text. A flagged "not found" does NOT prove the symbol is absent:
+plus a warning text. When the integrity check itself could not run (its query
+threw, or returned nothing readable), a not-found answer instead carries
+`index_integrity: { checked: false, reason: 'check_failed' | 'check_unreadable' }`,
+`confidence: 'LOW'` and an `NOT FOUND UNVERIFIED` warning, and no rebuild is
+started. A flagged "not found" does NOT prove the symbol is absent:
 use a text search, and retry once `codeStatus()` reports the index ready.
 Extract all of these with `parseToolJson()`.
 
@@ -1084,7 +1157,10 @@ Resolution order:
    (`AUTOSTART_VERSION_UNKNOWN` when its own version is unknown); an older
    server can lack guards the client relies on. Inside the test sandbox
    (`APRA_TEST_SANDBOX_ROOT`) an uninjected lookup fails with
-   `AUTOSTART_TEST_UNINJECTED`. A server stopped on purpose (`apra-fleet stop`
+   `AUTOSTART_TEST_UNINJECTED`. A version probe that cannot run (spawn error,
+   timeout, killed) fails with `AUTOSTART_PROBE_FAILED` naming the cause and
+   advising a retry, not `AUTOSTART_VERSION_SKEW`. Only launched starts count
+   toward the loop guard. A server stopped on purpose (`apra-fleet stop`
    wrote `<data dir>/stopped-by-user.json`, see `readStoppedByUser()`) is never
    started: `SERVER_STOPPED_BY_USER` with "apra-fleet was stopped by the user
    at <time> ...; run 'apra-fleet start'" (resolution and the reconnecting

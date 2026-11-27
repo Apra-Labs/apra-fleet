@@ -470,7 +470,10 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // 13 -> 14: the same function's PR-body read (`.read`) tells a branch with
 // no bible from a failed read with `git ls-tree --name-only HEAD -- <bible>`
 // on the maintainer; member_name and failSoft, like the other two.
-const EXPECTED_COMMAND_COUNT = 14;
+// 14 -> 16: createBaseBibleIds (the post-harvest no-tombstone drop) reads the base
+// bible at the merge-base with `git ls-tree` and `git show` on the maintainer;
+// both pass member_name and are failSoft.
+const EXPECTED_COMMAND_COUNT = 16;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -592,7 +595,11 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // 7 -> 8 (lock-holder watchdog): probeLockHolders()'s beads lock-holder probe,
 // run on the same member while a silent sync attempt is still in flight --
 // passes member_name: member.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 8;
+// 8 -> 7 (supervisor unpushed-beads launch preflight): readUnpushedDoltChanges()
+// became a thin wrapper over the transport-agnostic readUnpushedWith(runBd),
+// so its two reads (`bd vc status --json`, `bd diff ...`) now share ONE
+// command() call site inside the wrapper -- still member_name: member.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 7;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);

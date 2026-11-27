@@ -1612,7 +1612,17 @@ The approach was a strangler-fig extraction, not a rewrite:
   typed `UsageLimitWaitExhaustedError`, which `isTypedAbortError` routes
   through `finalizeAbort()`/an `[ABORTED]` PR like every other terminal abort.
   A cooperative stop (`requestStop` -> `CancelledError`) taken mid-pause is
-  never swallowed by the probe, so operator stop still tears the run down. The
+  never swallowed by the probe, so operator stop still tears the run down.
+  The wait itself is operator-interruptible: `requestPause` returns a
+  pause-end handle (`{ended}`) that `requestResume` settles with `'resume'`
+  and `requestStop` with `'stop'` (a pause requested after a stop gets an
+  already-settled handle). The controller's wait races its sleep against that
+  handle. An operator resume wakes it immediately and probes at once, without
+  a second `requestResume`, because the operator's resume already ran the
+  pre-resume hook; a stop wake throws `CancelledError` with no resume, no
+  probe and no second pause. A probe that ends in `max_turns_exhausted` counts
+  as the limit having lifted (the provider answered), and an inconclusive
+  probe's log line is truncated. The
   hook fires strictly *outside* any git-sync bracket (`openSyncBracketCount ===
   0`), which is what lets the clean-state pause guard engage the pause instead
   of deferring it. Two known simplifications: (1) **the pause is sprint-wide,

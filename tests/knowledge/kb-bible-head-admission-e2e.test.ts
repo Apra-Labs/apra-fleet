@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
 import { kbExport } from '../../src/tools/kb-export.js';
+import { kbCapabilities } from '../../src/tools/kb-capabilities.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 import { createKbWorkClient } from '../../packages/apra-fleet-se/fleet-sprint/kb.mjs';
@@ -132,7 +133,7 @@ describe('bible admission on a real maintainer work tree: dirty edits never flip
     commit('src/a.ts', 'change a');
     const r2 = JSON.parse(await kbBibleCommit({ ids: [id], ...base() }, { folder: clone }));
     expect(r2.merged).toEqual([]);
-    expect(r2.skipped).toEqual([{ id, reason: 'basis_mismatch' }]);
+    expect(r2.skipped).toEqual([{ id, reason: 'basis_mismatch', changed_files: [{ path: 'src/a.ts', reason: 'changed' }] }]);
     expect(fs.existsSync(biblePath())).toBe(false);
     await kbExport({}, { folder: clone });
     expect(bibleIds()).toEqual([]);
@@ -153,7 +154,7 @@ describe('bible admission on a real maintainer work tree: dirty edits never flip
     const second = JSON.parse(await kbBibleCommit({ ids: [drift, noFiles], ...base() }, { folder: clone }));
     expect(second.merged).toEqual([]);
     expect(second.skipped).toEqual([
-      { id: drift, reason: 'basis_mismatch' },
+      { id: drift, reason: 'basis_mismatch', changed_files: [{ path: 'src/a.ts', reason: 'changed' }] },
       { id: noFiles, reason: 'no_source_files' },
     ]);
     expect(second.committed).toBe(false);
@@ -180,6 +181,8 @@ describe('the engine bible queue against the real kb_bible_commit: a transient b
         return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
       }
       if (tool === 'kb_bible_commit') return kbBibleCommit(args, { folder: clone });
+      // The engine's bible-commit build gate reads the real tool's fleet_build.
+      if (tool === 'kb_capabilities') return kbCapabilities({}, { folder: clone });
       return {};
     };
     const client = createKbWorkClient({

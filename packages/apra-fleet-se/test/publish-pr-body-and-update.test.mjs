@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     buildSprintPrBody as buildSprintPrBodyParts, buildSprintPrTitle, parseRunHistory, sanitizePrMarkdown,
-    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget, NOTES_CONTINUED_MARKER, OVERFLOW_POINTER_RESERVE, MERGE_ASSESSMENT_CONTINUED_MARKER,
+    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget, NOTES_CONTINUED_MARKER, OVERFLOW_POINTER_RESERVE, MERGE_ASSESSMENT_CONTINUED_MARKER, ANALYSIS_POINTER_LINE,
 } from '../fleet-sprint/pr-body.mjs';
 import {
     buildCreatePrCommand as rawBuildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand as rawBuildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
@@ -61,6 +61,7 @@ const EXPECTED_BODY = [
     '- **Goal:** Ship the widget store',
     '- **Branch:** `feat/widgets` -> `main`',
     '- **Run:** `run-2` (2026-10-01T09:30Z)',
+    ANALYSIS_POINTER_LINE,
     '',
     '### Reviewer notes',
     '',
@@ -413,7 +414,7 @@ describe('sprint PR body: Merge assessment section', () => {
             '',
             '### Reviewer notes',
         ].join('\n');
-        assert.ok(body.includes('- **Run:** `run-2` (2026-10-01T09:30Z)\n\n' + expectedSection), body);
+        assert.ok(body.includes('- **Run:** `run-2` (2026-10-01T09:30Z)\n' + ANALYSIS_POINTER_LINE + '\n\n' + expectedSection), body);
         assert.ok(body.indexOf('### Merge assessment') < body.indexOf('### Reviewer notes'));
         // Everything outside the new section is exactly the no-assessment body.
         assert.equal(body.replace(expectedSection, '### Reviewer notes'), EXPECTED_BODY);
@@ -639,6 +640,16 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         assert.ok(logs.some((m) => m.includes('already exists') && m.includes('updated its fleet block') && m.includes('(PASS)')), JSON.stringify(logs));
     });
 
+    test('a raised PR logs its URL and "<sprint-branch> -> <base-branch>"; the update line names both too', async () => {
+        const gh = fakeGitHub();
+        const first = await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-log-1', member: 'pub-log' });
+        // Matched as a whole token (ends at whitespace, a period or the line end), not a substring.
+        const PR_URL_TOKEN = /(^|\s)https:\/\/github\.com\/acme\/widgets\/pull\/42(\s|\.|$)/;
+        assert.ok(first.logs.some((m) => PR_URL_TOKEN.test(m) && m.includes('feat/x -> main')), JSON.stringify(first.logs));
+        const second = await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-log-2', member: 'pub-log' });
+        assert.ok(second.logs.some((m) => m.includes('already exists') && m.includes('feat/x') && m.includes("-> 'main'")), JSON.stringify(second.logs));
+    });
+
     test('the Harvest cost block reaches the created PR body', async () => {
         const gh = fakeGitHub();
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-c', member: 'pub-cost', costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.' });
@@ -746,5 +757,20 @@ describe('raiseVcsPrForMember updateExisting contract', () => {
         assert.equal(res.alreadyExists, true);
         assert.equal(res.updated, false);
         assert.match(res.updateError, /no open pull request found for 'feat\/x' -> 'main'/);
+    });
+});
+
+describe('PR body: one-line pointer to the sprint analysis, never its text', () => {
+    test('exactly one pointer line, under 200 chars, and a long analysis fixture is not embedded', async () => {
+        const buildSprintPrBody = buildSprintPrBodyParts;
+        const longAnalysis = 'ANALYSIS-SENTINEL '.repeat(2000);
+        const common = { verdict: 'PASS', goal: 'Ship X', branch: 'feat/x', baseBranch: 'main', runId: 'run-ap', now: new Date('2026-01-01T00:00:00Z'), notes: 'All good.', details: [null, null], setAside: [], waited: [] };
+        // The analysis is never a builder input; a body assembled while a long analysis exists elsewhere must not carry it.
+        const body = buildSprintPrBody({ ...common, analysis: longAnalysis }).body;
+        assert.ok(!body.includes('ANALYSIS-SENTINEL'));
+        assert.equal(body.split('\n').filter((l) => l === ANALYSIS_POINTER_LINE).length, 1);
+        assert.equal(body.split('\n').filter((l) => /\*\*Analysis:\*\*/.test(l)).length, 1);
+        assert.ok(ANALYSIS_POINTER_LINE.length < 200);
+        assert.ok(ANALYSIS_POINTER_LINE.includes('analysis'));
     });
 });

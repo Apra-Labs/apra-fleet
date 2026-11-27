@@ -102,6 +102,35 @@ export interface NewProjectScriptOptions {
 export const AGY_NODE_SELF = '<node-self>';
 
 /**
+ * Member-side resolver embedded in the new-project script (it runs on the
+ * member, whose PATH and OS the hub cannot see). On win32 a bare name passed
+ * to spawnSync is searched in the spawn cwd -- the member work folder -- before
+ * PATH, so a planted agy.exe there would run. resolveCmd(name) instead walks
+ * only the fully qualified entries (drive + root, or UNC) of the script's
+ * augmented PATH for name.exe / name.com in PATHEXT order (a shell-less spawn
+ * cannot run a .cmd anyway, so nothing is lost) and throws naming every entry
+ * searched when none matches. An absolute name, and every non-win32 member,
+ * pass through unchanged. Uses the script's env, pathKey, fs and path.
+ */
+export const MEMBER_RESOLVE_CMD_JS = String.raw`function resolveCmd(name) {
+  if (process.platform !== 'win32' || path.win32.parse(name).root.length > 2) return name;
+  const exts = String(env.PATHEXT || '.COM;.EXE').split(';').map(function (e) { return e.trim().toLowerCase(); }).filter(function (e) { return e === '.exe' || e === '.com'; });
+  if (!exts.length) exts.push('.exe');
+  const searched = [];
+  const dirs = String(env[pathKey] || '').split(';');
+  for (let i = 0; i < dirs.length; i++) {
+    const d = dirs[i].trim().replace(/^"(.*)"$/, '$1').trim();
+    if (!d || path.win32.parse(d).root.length <= 2) continue;
+    searched.push(d);
+    for (let j = 0; j < exts.length; j++) {
+      const c = path.win32.join(d, name + exts[j]);
+      try { if (fs.statSync(c).isFile()) return c; } catch (e) {}
+    }
+  }
+  throw new Error('E-WINDOWS-COMMAND-NOT-FOUND: ' + name + ' was not found. Searched ' + searched.length + ' absolute PATH entries (' + searched.join(', ') + ') for ' + name + '.exe and ' + name + '.com; the work folder and relative PATH entries are never searched');
+}`;
+
+/**
  * Member-side node script: list ~/.gemini/config/projects, run
  * `agy --new-project` (spawned directly, no shell) in the work folder with a
  * --log-file, list again, and report the new file names plus the ids agy
@@ -138,7 +167,14 @@ const extra = [path.join(home, '.local', 'bin')];
 if (process.platform === 'win32' && env.LOCALAPPDATA) extra.push(path.join(env.LOCALAPPDATA, 'agy', 'bin'));
 env[pathKey] = extra.join(path.delimiter) + path.delimiter + (env[pathKey] || '');
 const args = ${JSON.stringify(args)}.map(function (a) { return a === '__LOG_FILE__' ? logFile : a; });
-const r = cp.spawnSync(${file === AGY_NODE_SELF ? 'process.execPath' : JSON.stringify(file)}, args, { cwd: ${JSON.stringify(opts.workFolder)}, env: env, encoding: 'utf8', timeout: ${NEW_PROJECT_SPAWN_TIMEOUT_MS}, windowsHide: true });
+if (process.platform === 'win32') env.NoDefaultCurrentDirectoryInExePath = '1';
+${MEMBER_RESOLVE_CMD_JS}
+let r;
+try {
+  r = cp.spawnSync(${file === AGY_NODE_SELF ? 'process.execPath' : `resolveCmd(${JSON.stringify(file)})`}, args, { cwd: ${JSON.stringify(opts.workFolder)}, env: env, encoding: 'utf8', timeout: ${NEW_PROJECT_SPAWN_TIMEOUT_MS}, windowsHide: true });
+} catch (e) {
+  r = { status: null, error: e, stderr: '' };
+}
 const created = list().filter(function (f) { return !before.has(f); }).map(function (f) { return f.slice(0, -5); });
 const logIds = [];
 try {

@@ -240,7 +240,7 @@ describe('legacy bible entries get a local freshness-only basis', () => {
 
     const commit = JSON.parse(await kbBibleCommit({ ids: ['kb-legacy-out'], ...BASE }, { folder: repo }));
     expect(commit.merged).toEqual([]);
-    expect(commit.skipped).toEqual([{ id: 'kb-legacy-out', reason: 'basis_mismatch' }]);
+    expect(commit.skipped).toEqual([{ id: 'kb-legacy-out', reason: 'basis_mismatch', changed_files: [{ path: 'src/a.ts', reason: 'no_basis' }] }]);
     expect(commit.committed).toBe(false);
     expect(fs.existsSync(biblePath)).toBe(false);
   });

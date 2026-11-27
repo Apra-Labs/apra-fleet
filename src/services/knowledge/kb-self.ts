@@ -36,6 +36,7 @@ import { isSqliteProject, requireSqliteProject } from './require-sqlite-project.
 import { HttpKbProvider } from './http-provider.js';
 import type { SqliteProvider } from './sqlite-provider.js';
 import { gitExecutable } from '../../os/git-executable.js';
+import { FLEET_DIR } from '../../paths.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -224,6 +225,20 @@ function rootRepoTopLevel(root: string): string | null {
  *     deleted folder, a non-file URI): E-SELF-NO-WORKFOLDER.
  *   - Roots on this host but none in a git repository: E-SELF-NOT-A-REPO.
  */
+/** True when `folder` is the fleet data dir (FLEET_DIR); never throws. */
+function isFleetDataDir(folder: string): boolean {
+  try {
+    const norm = (p: string): string => {
+      let r = path.resolve(p);
+      try { r = fs.realpathSync.native(r); } catch { /* keep the resolved path */ }
+      return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    return norm(folder) === norm(FLEET_DIR);
+  } catch {
+    return false;
+  }
+}
+
 function selectFullSessionFolder(): SelfSession {
   const roots = getSessionRoots();
   if (roots?.fetchError !== undefined) {
@@ -235,7 +250,21 @@ function selectFullSessionFolder(): SelfSession {
     );
   }
   if (!roots || roots.offered.length === 0) {
-    return { folder: process.cwd(), source: 'cwd', ...(roots ? { roots } : {}) };
+    const cwd = process.cwd();
+    // 'apra-fleet start' runs the server with its data dir as working folder
+    // (src/cli/start.ts), which is never a repository: say so instead of the
+    // generic "not a git repository" whose fix (restart the server in the
+    // repository) start can no longer do. Service-managed and stdio launches
+    // keep their own working folder and the fallback below.
+    if (isFleetDataDir(cwd)) {
+      throw new KbSelfError(
+        'E-SELF-NOT-A-REPO',
+        cwd,
+        `This is a FULL session (no member identity) and the client offered no MCP roots; the fleet server's working folder is its data dir '${cwd}' ('apra-fleet start' always runs it there), which is not a repository, so the session has no KB or code scope.`,
+        'Open the client in the repository so it offers MCP roots (it is then scoped to its first root inside a git repository with an origin remote), or call from a member session (?member=<id>) of a member registered on it.',
+      );
+    }
+    return { folder: cwd, source: 'cwd', ...(roots ? { roots } : {}) };
   }
   if (roots.folders.length === 0) {
     throw new KbSelfError(
@@ -353,6 +382,29 @@ export function memberOwnerTag(anchor?: KbAnchor): string | undefined {
   return memberId === undefined ? undefined : `member:${memberId}`;
 }
 
+/**
+ * Drop, in a MEMBER session, every non-CONFIRMED entry carrying a member:<id>
+ * tag other than the caller's own. Untagged entries (FULL-session captures),
+ * the caller's own tagged entries and every CONFIRMED entry stay. A FULL
+ * session or explicit-anchor caller (memberOwnerTag undefined) is unfiltered.
+ * This is a relevance filter, not access control: it keeps one member's
+ * unvalidated captures from being served to another member as knowledge.
+ * Used for reads of the global KB, which is shared by every member and so is
+ * not narrowed by the checkout bible view.
+ */
+export function filterOtherMembersUnconfirmed<T extends { confidence: string; tags?: readonly string[] }>(
+  entries: readonly T[],
+  anchor?: KbAnchor,
+): T[] {
+  const own = memberOwnerTag(anchor);
+  if (own === undefined) return [...entries];
+  return entries.filter(e => {
+    if (e.confidence === 'CONFIRMED') return true;
+    const memberTags = (e.tags ?? []).filter(t => t.startsWith('member:'));
+    return memberTags.length === 0 || memberTags.includes(own);
+  });
+}
+
 /** KB providers for a read-only kb_* call, plus the anchor they were resolved from. */
 export interface SelfReadKb {
   providers: KbProviders;
@@ -377,7 +429,9 @@ export interface SelfReadKb {
  * passing an explicit KbAnchor, a MEMBER request that explicitly names the
  * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
  * tiers are not the view's to answer), and a MEMBER request that opts into
- * `opts.ownScope` (see below). The global KB is unchanged either way. Both of
+ * `opts.ownScope` (see below). The global KB is unchanged either way, except that a MEMBER flagged_only
+ * kb_query drops other members' non-CONFIRMED entries from it
+ * (filterOtherMembersUnconfirmed). Both of
  * those last two MEMBER cases carry `ownerTag`: the caller sees only its own
  * captures.
  *

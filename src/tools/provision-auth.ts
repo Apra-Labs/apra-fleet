@@ -6,7 +6,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
-import { getAgentOS, getAgentShell, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShellMember, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
 import { credentialResolve } from '../services/credential-store.js';
@@ -429,7 +429,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clear
   if (envKinds.length > 0) storeAuthEnvVars(agent, envKinds);
   if (varsToUnset.length > 0) recordLlmAuthDelivery(agent.id, { removeEnvVars: varsToUnset });
   const clearedNote = envKinds.length > 0
-    ? `\n  Cleared: ${envKinds.join(', ')} removed from shell profiles and member config (force_oauth_copy)`
+    ? `\n  Cleared: ${envKinds.join(', ')} removed from the member's environment and config (force_oauth_copy)`
     : '';
 
   // 4. Verify auth
@@ -508,8 +508,9 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   }
 
   // 3. Persist (path-only command; the staged file is deleted by it). On a
-  // POSIX profile the same command first drops every existing export line
-  // for the name, so the profile ends with exactly one (marked) line.
+  // POSIX member the value goes to an owner-only env file; each profile drops
+  // every existing export line for the name (migrating a key an older release
+  // wrote there) and keeps one path-only source line.
   try {
     const result = await strategy.execCommand(cmds.persistEnvFromFile(envVarName, persistFile), 15000);
     persisted = result.code === 0;
@@ -580,12 +581,12 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   }
 
   result += `
-  Environment: ${envVarName} set in shell profiles and stored in member config
+  Environment: ${envVarName} set in ${isPosixShellMember(agent) ? `owner-only ~/.apra-fleet/env/${envVarName} (the shell profiles only source it)` : 'the user environment'} and stored in member config
 `;
   result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}
 `;
   if (otherKinds.length > 0) {
-    result += `  Cleared: ${otherKinds.join(', ')} removed from shell profiles and member config (other credential kind)
+    result += `  Cleared: ${otherKinds.join(', ')} removed from the member's environment and config (other credential kind)
 `;
   }
   for (const file of movedAside) {

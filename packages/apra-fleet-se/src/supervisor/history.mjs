@@ -92,6 +92,8 @@ const TERMINAL_DETAIL_EVENTS = Object.freeze([HISTORY_EVENTS.FINISHED, HISTORY_E
  * simply does not gate a relaunch (a false negative here only skips a
  * warning -- it never blocks a legitimate relaunch).
  */
+// BLOCKED_ON_OPERATOR is deliberately NOT listed: an operator answering the
+// decision is exactly what unblocks a relaunch.
 export const DETERMINISTIC_TERMINAL_REASONS = Object.freeze(new Set(['BEADS_SYNC_CONFLICT']));
 
 /**
@@ -157,6 +159,12 @@ function cloneEvent(e) {
         // event (and reader) is unchanged.
         ...(e.launchedBy ? { launchedBy: { sub: e.launchedBy.sub, name: e.launchedBy.name ?? null } } : {}),
         ...(e.stoppedBy ? { stoppedBy: { sub: e.stoppedBy.sub, name: e.stoppedBy.name ?? null } } : {}),
+        // FORCE_RELEASED only: whether the child kill landed (`killed`) and
+        // whether the holder was known only to the fleet server (`serverOnly`,
+        // nothing killed). Present only when recorded; the launch-time
+        // stale-holder rule reads them (api.mjs isProvablyDeadHolder).
+        ...(typeof e.killed === 'boolean' ? { killed: e.killed } : {}),
+        ...(e.serverOnly === true ? { serverOnly: true } : {}),
     };
 }
 
@@ -243,7 +251,7 @@ export function createHistory(deps = {}) {
         /**
          * Append one terminal event and persist atomically. The in-memory log is
          * committed only after the disk write succeeds.
-         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null, terminalReason?: string|null, verdict?: string|null, resultStatus?: string|null, warnings?: string[], launchedBy?: { sub: string, name: string|null }, stoppedBy?: { sub: string, name: string|null } }} entry
+         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null, terminalReason?: string|null, verdict?: string|null, resultStatus?: string|null, warnings?: string[], launchedBy?: { sub: string, name: string|null }, stoppedBy?: { sub: string, name: string|null }, killed?: boolean, serverOnly?: boolean }} entry
          * @returns {Promise<object>} a clone of the stored event
          */
         async record(entry) {
@@ -270,6 +278,8 @@ export function createHistory(deps = {}) {
                 warnings: entry.warnings,
                 launchedBy: entry.launchedBy,
                 stoppedBy: entry.stoppedBy,
+                killed: entry.killed,
+                serverOnly: entry.serverOnly,
             });
             const run = txChain.then(async () => {
                 const next = [...events, stored];

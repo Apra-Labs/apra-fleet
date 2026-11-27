@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { kbSetup } from '../../src/tools/kb-setup.js';
 import { _setKbInvalidateCommandOverride } from '../../src/tools/kb-invalidate.js';
 import { serializeBible } from '../../src/services/knowledge/bible-merge.js';
@@ -210,3 +210,82 @@ describe('a local merge of two bible-changing branches', () => {
     expect(git(clone, 'diff', '--name-only', '--diff-filter=U')).toBe(BIBLE);
   });
 });
+
+/**
+ * A stale registration: kb_setup recorded the absolute path of an apra-fleet
+ * install that has since moved. The "install" here is a copied entry script in
+ * the temp dir that loads the built CLI; moving it away leaves the registered
+ * driver command unable to start. The merge must then fail with standard
+ * conflict markers holding both sides (never exactly ours), and a kb_setup
+ * re-run must re-register the current paths.
+ */
+describe('a stale bible merge driver registration (apra-fleet moved)', () => {
+  function registerMovedInstall(): { stub: string; movedTo: string } {
+    const installDir = path.join(root, 'old-install');
+    fs.mkdirSync(installDir, { recursive: true });
+    const stub = path.join(installDir, 'index.mjs');
+    fs.writeFileSync(stub, `await import(${JSON.stringify(pathToFileURL(DIST_INDEX).href)});\n`);
+    _setKbInvalidateCommandOverride([process.execPath, stub]);
+    return { stub, movedTo: path.join(root, 'moved-install') };
+  }
+
+  it('a merge with the registered driver moved away exits non-zero and leaves conflict markers with both sides', async () => {
+    const origin = path.join(root, 'origin');
+    makeOrigin(origin);
+    const clone = cloneOf(origin, path.join(root, 'clone'));
+    const { stub, movedTo } = registerMovedInstall();
+    await kbSetup({}, { folder: clone });
+    expect(git(clone, 'config', '--local', `merge.${BIBLE_MERGE_DRIVER_NAME}.driver`)).toContain(pathForSh(stub));
+    const oursText = fs.readFileSync(path.join(clone, BIBLE), 'utf8');
+    fs.renameSync(path.dirname(stub), movedTo);
+
+    const merge = spawnSync('git', ['-c', 'rerere.enabled=false', 'merge', '--no-edit', 'origin/theirs'], { cwd: clone, encoding: 'utf8', windowsHide: true });
+    expect(merge.status).not.toBe(0);
+    const text = fs.readFileSync(path.join(clone, BIBLE), 'utf8');
+    expect(text).not.toBe(oursText);
+    expect(text).toMatch(/^<<<<<<< /m);
+    expect(text).toMatch(/^>>>>>>> /m);
+    // Both sides are in the file: ours' rewritten summary and theirs' tombstone.
+    expect(text).toContain('ours rewrote this summary');
+    expect(text).toContain('no longer holds after the refactor');
+    expect(git(clone, 'diff', '--name-only', '--diff-filter=U')).toBe(BIBLE);
+    expect(merge.stderr).toMatch(/re-run kb_setup/);
+  });
+
+  it('re-running kb_setup re-registers the current paths and reports the repair; the merge then resolves via the driver', async () => {
+    const origin = path.join(root, 'origin');
+    makeOrigin(origin);
+    const clone = cloneOf(origin, path.join(root, 'clone'));
+    const { stub, movedTo } = registerMovedInstall();
+    await kbSetup({}, { folder: clone });
+    const stale = git(clone, 'config', '--local', `merge.${BIBLE_MERGE_DRIVER_NAME}.driver`);
+    fs.renameSync(path.dirname(stub), movedTo);
+    expect(gitStatus(clone, '-c', 'rerere.enabled=false', 'merge', '--no-edit', 'origin/theirs')).not.toBe(0);
+    git(clone, 'merge', '--abort');
+
+    // The current install.
+    _setKbInvalidateCommandOverride([process.execPath, DIST_INDEX]);
+    const repaired = JSON.parse(await kbSetup({}, { folder: clone }));
+    const repairStep = repaired.steps.find((s: string) => s.startsWith('Repaired the knowledge bible merge driver'));
+    expect(repairStep).toBeDefined();
+    expect(repairStep).toContain(stale);
+    expect(git(clone, 'config', '--local', `merge.${BIBLE_MERGE_DRIVER_NAME}.driver`)).toBe(buildBibleMergeDriverCommand([process.execPath, DIST_INDEX]));
+
+    // A re-run with a current registration changes nothing and reports no repair.
+    const again = JSON.parse(await kbSetup({}, { folder: clone }));
+    expect(again.steps.some((s: string) => s.startsWith('Repaired'))).toBe(false);
+    expect(again.steps.some((s: string) => s.startsWith('Registered the knowledge bible merge driver'))).toBe(true);
+    expect(installBibleMergeDriver(clone, [process.execPath, DIST_INDEX])).not.toHaveProperty('repairedFrom');
+
+    expect(gitStatus(clone, '-c', 'rerere.enabled=false', 'merge', '--no-edit', 'origin/theirs')).toBe(0);
+    const merged = readBible(clone);
+    expect(merged.entries.map((e) => e.id)).toEqual(['a', 'c', 'd', 'e']);
+    expect(merged.demotions).toEqual([WITHDRAWN_B]);
+    expect(checkBibleFile(path.join(clone, BIBLE)).problems).toEqual([]);
+  });
+});
+
+// git for Windows' sh takes forward slashes; the registered command stores them that way.
+function pathForSh(p: string): string {
+  return process.platform === 'win32' ? p.replace(/\\/g, '/') : p;
+}

@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, unsetEnvSedExpr, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord, gitResetParamWords } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, FLEET_TASK_PROMPT_FILE, unsetEnvSedExpr, envSourceLine, envSourceLineSedExpr, FLEET_ENV_DIR, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord, gitResetParamWords } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
@@ -142,15 +142,22 @@ export class LinuxCommands implements OsCommands {
     // or folder names that contain the process name as a substring (e.g. fleet-agy).
     // Note: use POSIX [[:space:]] instead of \s because BSD/macOS pgrep -f does not support \s.
     const bracketName = `(^|/|[[:space:]])[${pname[0]}]${pname.slice(1)}([[:space:]]|$)`;
-    const folderPattern = escapeGrepPattern(folder);
-    const fleetMatch = sessionId
-      ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`
-      : `grep "${folderPattern}"`;
+    // A candidate counts as fleet-launched only when its argv carries the
+    // dispatch marker (the prompt file every execute_prompt instruction names)
+    // AND it belongs to this member: the session id, or the work folder as the
+    // dispatch wrapper quotes it (`cd "<folder>" && ...`). The closing quote
+    // anchors the folder, so /x/repo never matches /x/repo-wt; the marker
+    // keeps an operator's own CLI in the same folder (or a provider helper
+    // carrying the workspace path) out of fleet-busy.
+    const owners = [`\\"${escapeGrepPattern(folder)}\\"`];
+    if (sessionId) owners.push(escapeGrepPattern(sanitizeSessionId(sessionId)));
+    const marker = escapeGrepPattern(FLEET_TASK_PROMPT_FILE);
 
     return `AGENT_PIDS=$(pgrep -f "${bracketName}" 2>/dev/null); `
       + `if [ -z "$AGENT_PIDS" ]; then echo "idle"; `
-      + `else CMDLINES=$(ps -o args= -p $AGENT_PIDS 2>/dev/null); `
-      + `if echo "$CMDLINES" | ${fleetMatch} > /dev/null 2>&1; then echo "fleet-busy"; `
+      + `else FLEET_PID=$(ps -o pid=,args= -p "$(echo $AGENT_PIDS | tr ' ' ',')" 2>/dev/null `
+      + `| grep "${marker}" | grep -E "(${owners.join('|')})" | awk 'NR==1{print $1}'); `
+      + `if [ -n "$FLEET_PID" ]; then echo "fleet-busy $FLEET_PID"; `
       + `else echo "other-busy"; fi; fi`;
   }
 
@@ -314,26 +321,37 @@ export class LinuxCommands implements OsCommands {
     return 'sed -i';
   }
 
-  // Persisting replaces: each profile first drops every existing
+  // Persisting replaces, and keeps the value out of every shell profile
+  // (often 0644 under a 0755 home). The staged content is copied into
+  // FLEET_ENV_DIR/NAME, created exclusively (set -C) under umask 077, so it is
+  // 0600 from the first byte; only then does each profile drop every existing
   // `export NAME=` line (marked or hand-written -- provisioning is an explicit
-  // delivery of that var), then gets the staged marked line appended, so it
-  // ends with exactly one export of NAME. Nothing is stripped when the staged
-  // file is missing.
+  // delivery of that var, and this is also the migration of a key an older
+  // release wrote into the profile) and any earlier source line, and get one
+  // path-only source line. Nothing changes when the staged file is missing or
+  // the install fails. A profile whose last line has no newline gets one
+  // first, so the source line never fuses onto (and later deletes) it.
   persistEnvFromFile(name: string, filePath: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     const q = escapeShellArg(filePath);
-    const expr = unsetEnvSedExpr(name, { all: true });
-    const appends = this.envProfileFiles()
-      .map(f => `{ ${this.sedInPlace()} '${expr}' ${f} 2>/dev/null || true; cat ${q} >> ${f}; }`)
+    const dir = `"${FLEET_ENV_DIR}"`;
+    const tmp = `"${FLEET_ENV_DIR}/.${name}.tmp"`;
+    const dest = `"${FLEET_ENV_DIR}/${name}"`;
+    const install = `( umask 077 && mkdir -p ${dir} && chmod 700 ${dir} && rm -f ${tmp} && ( set -C; cat ${q} > ${tmp} ) && chmod 600 ${tmp} && mv -f ${tmp} ${dest} )`;
+    const sedArgs = `-e '${unsetEnvSedExpr(name, { all: true })}' -e '${envSourceLineSedExpr(name)}'`;
+    const line = `'${envSourceLine(name)}'`;
+    const profiles = this.envProfileFiles()
+      .map(f => `{ ${this.sedInPlace()} ${sedArgs} ${f} 2>/dev/null || true; [ -s ${f} ] && [ -n "$(tail -c1 ${f})" ] && echo >> ${f}; printf '%s\\n' ${line} >> ${f}; }`)
       .join(' && ');
-    return `test -f ${q} && ${appends}; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
+    return `test -f ${q} && ${install} && ${profiles}; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
   }
 
   unsetEnv(name: string, opts?: UnsetEnvOptions): string[] {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const expr = unsetEnvSedExpr(name, opts);
+    const sedArgs = `-e '${unsetEnvSedExpr(name, opts)}' -e '${envSourceLineSedExpr(name)}'`;
     return [
-      ...this.envProfileFiles().map(f => `${this.sedInPlace()} '${expr}' ${f} 2>/dev/null || true`),
+      ...this.envProfileFiles().map(f => `${this.sedInPlace()} ${sedArgs} ${f} 2>/dev/null || true`),
+      `rm -f "${FLEET_ENV_DIR}/${name}"`,
       `unset ${name}`,
     ];
   }

@@ -20,12 +20,13 @@ import {
   makeFtsQuery,
   makeAudnDecision,
 } from './audn.js';
-import { computeFileHashBatch } from './file-hash.js';
+import { computeFileHashBatch, computeHeadFileHashBatch, KbHeadHashError } from './file-hash.js';
+import { isRepoRelativePath } from './bible-basis-filter.js';
 import { ensureKeywordIndex, keywordMatchExpression, keywordSearch } from './kb-keyword-index.js';
 import { validateFilePaths } from './path-validation.js';
 import { citedFilterSql, hasCitedFilter, normalizeCitedFilter, normalizeCitedPath } from './cited-filter.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
-import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
+import { KbCaptureRejected, type DiscardResult, type PromoteResult, type PromoteUnstampedFile, type RetireOptions } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -188,9 +189,44 @@ export class SqliteProvider implements MemoryProvider {
     this.repoPath = repoPath;
   }
 
+  /**
+   * Run one `ALTER TABLE ... ADD COLUMN <col> ...` migration. Only SQLite's
+   * "duplicate column name" error is ignored (the column already exists: the
+   * normal re-open case). Any other failure (locked/busy, read-only, disk I/O)
+   * throws an Error naming the DB path, the column and the sqlite cause, so a
+   * DB that cannot be migrated fails at open instead of later as "no such column".
+   */
+  private addColumnIfMissing(sql: string): void {
+    try {
+      this.db!.exec(sql);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/duplicate column name/i.test(message)) return;
+      const col = /ADD COLUMN\s+(\w+)/i.exec(sql)?.[1] ?? sql;
+      throw new Error(`KB database ${path.resolve(this.dbPath)}: schema migration failed adding column ${col}: ${message}`);
+    }
+  }
+
+  /**
+   * Open the database and bring its schema up to date. A failure at any step
+   * (open, pragmas, schema, migration: locked/busy, read-only, disk I/O) throws
+   * an Error naming the DB file path and the underlying cause, and leaves the
+   * provider closed so a later init() retries instead of silently succeeding.
+   */
   async init(): Promise<void> {
     if (this.db !== null) return;
+    try {
+      await this.initUnchecked();
+    } catch (err) {
+      try { (this.db as DatabaseSync | null)?.close(); } catch { /* already unusable */ }
+      this.db = null;
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes(path.resolve(this.dbPath))) throw err;
+      throw new Error(`KB database ${path.resolve(this.dbPath)}: could not be opened or migrated: ${message}`);
+    }
+  }
 
+  private async initUnchecked(): Promise<void> {
     const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -272,9 +308,7 @@ export class SqliteProvider implements MemoryProvider {
     `);
 
     // Migration: add scope column to existing DBs
-    try {
-      this.db.exec("ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
-    } catch {}
+    this.addColumnIfMissing("ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
 
     // T2.2 (F3 PART A, revised D3): additive column storing a JSON map of
     // source_file -> content hash captured AT CAPTURE TIME, for ALL entry
@@ -282,9 +316,7 @@ export class SqliteProvider implements MemoryProvider {
     // to '{}' (no basis) and are treated fresh/unknown, never falsely stale
     // (D1/D3 no-mass-migration). This is the freshness basis checkFreshness
     // compares against at prime() time.
-    try {
-      this.db.exec("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
-    } catch {}
+    this.addColumnIfMissing("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
 
     // Why a row was retired (superseded_at set): 'superseded' (a contradiction
     // loser, or replaced by a capture naming it in supersedes) or 'invalidated'
@@ -292,9 +324,7 @@ export class SqliteProvider implements MemoryProvider {
     // the two apart, and kb_bible_commit reports the reason for each bible
     // entry it removes. Internal only: never surfaced on KBEntry. Rows retired
     // before this column existed read NULL and count as 'superseded'.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
 
     // Legacy bible import (v1/v2 entry, or a v3 entry without a valid carried
     // map): source_file_hashes then holds THIS clone's file hashes, a
@@ -303,9 +333,7 @@ export class SqliteProvider implements MemoryProvider {
     // mechanical contradiction win (getSourceFileBases / reconcile prefilter
     // read it as no basis). Internal only: never surfaced on KBEntry. Existing
     // rows default to 0.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
 
     // kb_demote (CONFIRMED -> INFERRED): demoted_at records WHEN trust was
     // withdrawn, demoted_basis_hashes the sha256 of each cited source file AS
@@ -317,21 +345,15 @@ export class SqliteProvider implements MemoryProvider {
     // guarded-ALTER pattern as scope/source_file_hashes above: it runs on a
     // fresh DB (the columns are not in CREATE TABLE) and is a caught no-op on
     // a DB that already has them.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN demoted_at TEXT');
-    } catch {}
-    try {
-      this.db.exec("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN demoted_at TEXT');
+    this.addColumnIfMissing("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
 
     // The updated_at a bible carried for an entry this clone imported (capture
     // opts.carriedUpdatedAt): when the exporting clone promoted it. Tombstones
     // are judged against it (getBibleTrustTimes), never against the local
     // import time. Internal only: never surfaced on KBEntry. NULL on every row
     // that was not imported, and on rows imported before the column existed.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN bible_updated_at TEXT');
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN bible_updated_at TEXT');
 
     // kb_import trust anchor: git blob ids of bibles the maintainer side wrote
     // or imported (kb_bible_commit and FULL / kb_maintainer kb_import). A
@@ -1853,7 +1875,7 @@ export class SqliteProvider implements MemoryProvider {
     id: string,
     reason?: string,
     opts?: { ownerTag?: string },
-  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+  ): Promise<PromoteResult> {
     const db = this.getDb();
     const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!row) throw new Error(`Entry not found: ${id}`);
@@ -1907,15 +1929,50 @@ export class SqliteProvider implements MemoryProvider {
       );
     }
 
+    // (3) The basis is stamped from the cited files AT HEAD -- the content the
+    // promoter verified -- not left at capture time. Otherwise an entry about a
+    // file the branch edited after capture fails kb_bible_commit's basis rule
+    // (basis_mismatch) however carefully it was re-verified. Same digest and
+    // the same HEAD read as the bible basis predicate (computeHeadFileHashBatch:
+    // git blob id of HEAD:<path>). A cited file with no blob at HEAD, or whose
+    // work-tree content differs from HEAD (an uncommitted edit), is NOT stamped:
+    // it keeps its previous basis hash and is reported in unstamped_files, so
+    // an entry captured against uncommitted work stays queued for the bible
+    // and is admitted once that exact content is committed. null = no HEAD
+    // basis is readable here (see headBasisFor); the stored basis is left as is.
+    const previousBasis = row.local_basis_only ? null : this.parseBasis((row.source_file_hashes as string | null) ?? null);
+    const head = await this.headBasisFor(entry.source_files, previousBasis);
+    const stamped = head !== null && head.stamped > 0;
+
     const confidence_before = entry.confidence;
     let confidence_after: Confidence;
+    const author = entry.author || 'unknown';
 
     if (confidence_before === 'UNVERIFIED') {
       confidence_after = 'INFERRED';
     } else if (confidence_before === 'INFERRED') {
       confidence_after = 'CONFIRMED';
     } else {
-      return { id, confidence_before, confidence_after: confidence_before };
+      // Already CONFIRMED: a promote is an explicit re-verification. A basis
+      // that drifted from HEAD (or was only a local freshness basis) is
+      // re-stamped at HEAD and reported as rebased; confidence, promoted_at and
+      // source are unchanged (a re-base is not a new promotion).
+      if (!head) return { id, confidence_before, confidence_after: confidence_before, basis_stamped: false };
+      const drifted = stamped && (head.changed.length > 0 || row.local_basis_only === 1);
+      if (!drifted) {
+        return {
+          id, confidence_before, confidence_after: confidence_before, basis_stamped: false, rebased: false,
+          previous_basis_files_changed: [], unstamped_files: head.unstamped,
+        };
+      }
+      const rebaseNote = '\n[Re-verified at HEAD, basis re-stamped: ' + reason + ' -- ' + author + ']';
+      db.prepare('UPDATE entries SET source_file_hashes = ?, local_basis_only = 0, content = ? WHERE id = ?')
+        .run(JSON.stringify(head.basis), truncateContent(entry.content + rebaseNote), id);
+      await this.reviveAfterRestamp(id);
+      return {
+        id, confidence_before, confidence_after: confidence_before,
+        basis_stamped: true, rebased: true, previous_basis_files_changed: head.changed, unstamped_files: head.unstamped,
+      };
     }
 
     const now = new Date().toISOString();
@@ -1923,18 +1980,109 @@ export class SqliteProvider implements MemoryProvider {
     // hook gotcha: backtick-n escapes inside JS template literals false-
     // positive on the hook's non-ASCII scan.
     const promotionNote = reason
-      ? '\n[Promoted: ' + reason + ' -- ' + (entry.author || 'unknown') + ']'
-      : '\n[Promoted -- ' + (entry.author || 'unknown') + ']';
+      ? '\n[Promoted: ' + reason + ' -- ' + author + ']'
+      : '\n[Promoted -- ' + author + ']';
     const newContent = entry.content + promotionNote;
 
     // D5 (T2.3): kb_promote is a tool-layer provenance event -- stamp
     // source='promotion' on the promoted row. This is a deliberate D5
     // choice: the row's provenance reflects the promotion mechanism rather
     // than preserving the original capture source.
+    if (head && stamped) {
+      db.prepare('UPDATE entries SET confidence = ?, promoted_at = ?, content = ?, source = ?, source_file_hashes = ?, local_basis_only = 0 WHERE id = ?')
+        .run(confidence_after, now, newContent, 'promotion', JSON.stringify(head.basis), id);
+      await this.reviveAfterRestamp(id);
+      return { id, confidence_before, confidence_after, basis_stamped: true, previous_basis_files_changed: head.changed, unstamped_files: head.unstamped };
+    }
     db.prepare('UPDATE entries SET confidence = ?, promoted_at = ?, content = ?, source = ? WHERE id = ?')
       .run(confidence_after, now, newContent, 'promotion', id);
 
-    return { id, confidence_before, confidence_after };
+    return {
+      id, confidence_before, confidence_after, basis_stamped: false,
+      ...(head ? { previous_basis_files_changed: [], unstamped_files: head.unstamped } : {}),
+    };
+  }
+
+  /**
+   * The basis promote() stamps: each cited repo-relative file's git blob id at
+   * this provider's repo HEAD (computeHeadFileHashBatch, the bible basis
+   * predicate's own read). A file is stamped only when its work-tree content
+   * equals HEAD (same digest: git hash-object of the file on disk), so an
+   * uncommitted edit never enters the basis. Returns:
+   *  - basis: the new file -> hash map over the cited files. A file that is
+   *    not stamped keeps its previous stored hash (none for a row whose basis
+   *    was only a local freshness basis);
+   *  - stamped: how many cited files were stamped from HEAD;
+   *  - changed: stamped files whose previous stored hash was missing or differs;
+   *  - unstamped: cited files not stamped, with why -- absent_at_head (no blob
+   *    at HEAD: untracked, never committed, an unborn HEAD, or a path that is
+   *    not repo-relative) or uncommitted_edit (the work tree differs from HEAD).
+   * null when no HEAD basis is readable here: no repo anchor (the shared
+   * global KB), an anchor absent on this host (the remote-member case, see
+   * anchorIsMissing), or a folder that is not a git work tree.
+   */
+  private async headBasisFor(
+    files: string[],
+    previous: Record<string, string> | null,
+  ): Promise<{
+    basis: Record<string, string>;
+    stamped: number;
+    changed: string[];
+    unstamped: PromoteUnstampedFile[];
+  } | null> {
+    if (this.repoPath === undefined || this.anchorIsMissing()) return null;
+    const relative = files.filter(isRepoRelativePath);
+    let current: Record<string, { hash: string } | null>;
+    try {
+      current = await computeHeadFileHashBatch(relative, { cwd: this.repoPath });
+    } catch (err) {
+      if (err instanceof KbHeadHashError) return null;
+      throw err;
+    }
+    const onDisk = relative.length > 0 ? await this.hashAnchored(relative) : {};
+    const basis: Record<string, string> = {};
+    const changed: string[] = [];
+    const unstamped: PromoteUnstampedFile[] = [];
+    let stamped = 0;
+    for (const f of files) {
+      const prev = previous && typeof previous[f] === 'string' ? previous[f] : undefined;
+      const cur = isRepoRelativePath(f) ? current[f] : null;
+      const disk = isRepoRelativePath(f) ? onDisk[f] : null;
+      if (!cur || !disk || disk.hash !== cur.hash) {
+        unstamped.push({ path: f, reason: cur ? 'uncommitted_edit' : 'absent_at_head' });
+        if (prev !== undefined) basis[f] = prev;
+        continue;
+      }
+      basis[f] = cur.hash;
+      stamped++;
+      if (prev !== cur.hash) changed.push(f);
+    }
+    return { basis, stamped, changed, unstamped };
+  }
+
+  /**
+   * After promote() re-stamps a basis: a stale row is revived when the same
+   * rule the freshness sweep applies holds (no supersede, feedback or
+   * invalidate actor, and the new basis fully matches the files as they are
+   * now). A row staled only because its old basis drifted is otherwise still
+   * skipped by kb_bible_commit after a successful re-verification.
+   */
+  private async reviveAfterRestamp(id: string): Promise<void> {
+    const db = this.getDb();
+    const r = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!r) return;
+    const e = this.rowToEntry(r);
+    if (!e.stale) return;
+    if (!this.freshnessRevivable({
+      superseded_at: e.superseded_at ?? null,
+      flagged_for_review: e.flagged_for_review,
+      content_hash: e.content_hash,
+      content: e.content,
+    })) return;
+    const basis = this.parseBasis((r.source_file_hashes as string | null) ?? null);
+    if (!basis) return;
+    const currentHashes = await this.hashAnchored(Object.keys(basis));
+    if (this.basisFullyMatches(basis, currentHashes)) db.prepare('UPDATE entries SET stale = 0 WHERE id = ?').run(id);
   }
 
   /**

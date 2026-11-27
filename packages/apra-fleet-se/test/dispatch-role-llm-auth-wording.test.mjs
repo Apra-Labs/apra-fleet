@@ -46,17 +46,18 @@ describe('dispatch-role LLM auth failure wording per member kind', () => {
     test('remote member (and unresolved kind): both keep the provision_llm_auth / API-key guidance', async () => {
         for (const kind of ['remote', undefined]) {
             const { thrown, log } = await run(kind, authError());
-            assert.match(log, /provision_llm_auth; or provision an API key/);
-            assert.match(thrown.message, /provision_llm_auth; or provision an API key/);
+            assert.match(log, /provision_llm_auth \(or provision an API key\)/);
+            assert.match(thrown.message, /provision_llm_auth \(or provision an API key\)/);
         }
     });
 
-    test('the heal-failed suffix is appended exactly once, even if the message names provision_llm_auth or already carries it', async () => {
+    test('the failed heal is stated exactly once, even if the message names provision_llm_auth or already carries a heal-failed note', async () => {
         for (const kind of ['local', 'remote']) {
             const named = await run(kind, authError('Run /login, then run provision_llm_auth to deploy them. auth'));
-            assert.equal(count(named.thrown.message, 'LLM auth heal failed'), 1, `${kind}/named`);
+            assert.equal(count(named.thrown.message, 'LLM auth self-heal failed'), 1, `${kind}/named`);
             const already = await run(kind, authError("auth [LLM auth heal failed for member 'm1': earlier]"));
-            assert.equal(count(already.thrown.message, 'LLM auth heal failed'), 1, `${kind}/already`);
+            assert.equal(count(already.thrown.message, 'LLM auth self-heal failed'), 1, `${kind}/already`);
+            assert.equal(count(already.thrown.message, 'LLM auth heal failed'), 1, `${kind}/already keeps the earlier note, not re-added`);
         }
     });
 });

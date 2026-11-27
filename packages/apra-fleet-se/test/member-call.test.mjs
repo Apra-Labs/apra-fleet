@@ -140,6 +140,19 @@ describe('memberCall remote/relay adapter', () => {
         assert.strictEqual(order[0].o.command, `apra-fleet call --member ${MID} --list-tools`);
         assert.deepStrictEqual(res.tools, [{ name: 'version' }]);
     });
+
+    test('listTools on a remote member reads pretty-printed JSON and a bare array between log lines', async () => {
+        const pretty = 'starting...\n' + JSON.stringify({ tools: [{ name: 'version' }] }, null, 2) + '\ndone';
+        const mc = createMemberCall({ fleetApi: makeFleetApi([], { execText: pretty }), resolveTarget: async () => ({ os: 'linux', shell: '' }) });
+        assert.deepStrictEqual((await mc.listTools(remote)).tools, [{ name: 'version' }]);
+        const bare = createMemberCall({ fleetApi: makeFleetApi([], { execText: 'log line\n[\n  {"name": "version"}\n]\n' }), resolveTarget: async () => ({ os: 'linux', shell: '' }) });
+        assert.deepStrictEqual(await bare.listTools(remote), [{ name: 'version' }]);
+    });
+
+    test('unparseable remote output throws E-REMOTE-PARSE carrying the raw output', async () => {
+        const mc = createMemberCall({ fleetApi: makeFleetApi([], { execText: 'Segmentation fault' }), resolveTarget: async () => ({ os: 'linux', shell: '' }) });
+        await assert.rejects(() => mc.listTools(remote), (e) => e.code === 'E-REMOTE-PARSE' && e.details.raw === 'Segmentation fault');
+    });
 });
 
 describe('memberCall remote engine-side args-file cleanup', () => {
@@ -351,6 +364,32 @@ describe('memberCall --kb-maintainer capability gate (remote)', () => {
         const before = order.length;
         await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true }), isTooOld);
         assert.strictEqual(order.length, before);
+    });
+
+    test('inconclusive probe + call failing for another reason is not cached as supported: next call probes again', async () => {
+        const order = [];
+        const mc = createMemberCall({
+            fleetApi: makeFleetApi(order, {
+                probeText: 'bash: apra-fleet: command not found', probeError: true,
+                execText: 'ssh: connection reset by peer', execError: true,
+            }),
+            resolveTarget: linux,
+        });
+        await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true }), (e) => e instanceof MemberCallError && !isTooOld(e));
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 1);
+        await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e2', reason: 'r' }, { kbMaintainer: true }), MemberCallError);
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 2, 'the member was probed again');
+    });
+
+    test('inconclusive probe + successful call caches supported: next call does not re-probe', async () => {
+        const order = [];
+        const mc = createMemberCall({
+            fleetApi: makeFleetApi(order, { probeText: 'bash: apra-fleet: command not found', probeError: true }),
+            resolveTarget: linux,
+        });
+        await mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true });
+        await mc.memberCall(remote, 'kb_promote', { id: 'e2', reason: 'r' }, { kbMaintainer: true });
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 1);
     });
 
     test('a capable member is probed once per member per factory; a call without the grant never probes', async () => {

@@ -198,15 +198,15 @@
       "stderr": "Error removing remote: remove remote no-such-remote: Error 1105: error: unknown remote: 'no-such-remote'"
     },
     {
-      "id": "dolt/diverged/push-no-common-ancestor",
+      "id": "dolt/unrelated-history/push-no-common-ancestor",
       "tool": "dolt",
       "toolVersion": "dolt version 2.2.3",
       "bdVersion": "bd version 1.1.0 (8e4e59d39: chore/j918-test-suite-cleanup@8e4e59d39f34)",
       "command": "bd dolt push   (two clones with independent Dolt histories, remote already advanced)",
-      "expect": "diverged",
+      "expect": "unrelated-history",
       "exitCode": 1,
       "stderr": "Pushing to Dolt remote...\nError: push to origin/main: Error 1105: unknown push error; no common ancestor\n\nLocal and remote Dolt histories have diverged.\nThis means the local database and the remote have independent commit\nhistories with no common merge base.\n\nRecovery options:\n\n  1. Keep remote, discard local (recommended if remote is authoritative):\n       bd bootstrap              # re-clone from remote\n\n  2. Keep local, overwrite remote (if local is authoritative):\n       bd dolt push --force       # force-push local history to remote\n\n  3. Manual recovery (re-initialize local database):\n       rm -rf .beads/dolt         # delete local Dolt database\n       bd bootstrap              # re-clone from remote\n\nTip: This usually happens when multiple agents independently initialize\ndatabases and push to the same remote. Use 'bd bootstrap' to clone an\nexisting remote instead of 'bd init' to avoid divergent histories.",
-      "note": "the \"have diverged\" token that earns the diverged verdict is on the FOURTH line -- truncating this output to its first line flips the verdict to unknown"
+      "note": "independent histories: \"no common ancestor\" is on the FIRST line, but the text also says \"have diverged\" -- unrelated-history must be checked before diverged"
     }
   ]
 }

@@ -220,7 +220,20 @@ export function readBibleEntries(outPath: string): CanonicalEntry[] | null {
 export function readBibleDocument(outPath: string): CanonicalBibleDocument | null {
   if (!fs.existsSync(outPath)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+    return parseBibleDocumentText(fs.readFileSync(outPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The same lenient parse as readBibleDocument, of bible text already in hand
+ * (e.g. the blob committed at HEAD). null when the text is not a bible in
+ * either shape.
+ */
+export function parseBibleDocumentText(text: string): CanonicalBibleDocument | null {
+  try {
+    const parsed = JSON.parse(text);
     const existing = Array.isArray(parsed)
       ? parsed
       : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);

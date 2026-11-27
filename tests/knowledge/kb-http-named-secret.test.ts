@@ -325,7 +325,7 @@ describe('HTTP KB provider with a named-secret token', () => {
     expect(count('/api/kb/feedback')).toBe(2);
   });
 
-  it('7. literal token config: unchanged -- no retry on 401, plain HTTP_401 error, nothing queued', async () => {
+  it('7. literal token config: no retry on 401, E-KB-HTTP-AUTH (rejected) naming kb_setup, never a fleet secret, nothing queued', async () => {
     writeConfig({ token_encrypted: encryptPassword(TOKEN_A) });
     const p = await provider();
     expect((await p.capture(entry('Literal ok'))).id).toBe('srv-1');
@@ -334,16 +334,21 @@ describe('HTTP KB provider with a named-secret token', () => {
     stub.requests.length = 0;
     let caught: unknown;
     try { await p.capture(entry('Literal rejected')); } catch (err) { caught = err; }
-    expect(caught).not.toBeInstanceOf(KbHttpAuthError);
-    expect((caught as NodeJS.ErrnoException).code).toBe('HTTP_401');
-    expect((caught as Error).message).toBe('HTTP 401: Unauthorized');
+    expect(caught).toBeInstanceOf(KbHttpAuthError);
+    const auth = caught as KbHttpAuthError;
+    expect(auth.code).toBe('E-KB-HTTP-AUTH');
+    expect(auth.reason).toBe('rejected');
+    expect(auth.secretName).toBeUndefined();
+    expect(auth.message).toMatch(/^E-KB-HTTP-AUTH: the KB server rejected the literal token stored in the KB config \(HTTP 401\)\./);
+    expect(auth.remediation).toContain('kb_setup');
+    expect(auth.message).not.toMatch(/secret --set|fleet secret/);
     expect(count('/api/kb/capture')).toBe(1);
 
-    // Echoed header: redacted, never the literal value.
+    // Echoed header: the message is fixed text, never the literal value.
     stub.echoAuth = true;
     let echoed: unknown;
     try { await p.query({ query: 'gear' }); } catch (err) { echoed = err; }
-    expect((echoed as NodeJS.ErrnoException).code).toBe('HTTP_401');
+    expect((echoed as KbHttpAuthError).code).toBe('E-KB-HTTP-AUTH');
     errorTexts.push((echoed as Error).message);
   });
 });

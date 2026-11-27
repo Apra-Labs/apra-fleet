@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_IDENTITY_PROBE_TIMEOUT_S, BEADS_IDENTITY_WARNING_PREFIX, BEADS_SETUP_COMMANDS, BEADS_SETUP_TIMEOUT_S, BEADS_READING_ROLES, BEADS_WORKSPACE_CONFIG_FILE, BEADS_LOCAL_CONFIG_FILE, BEADS_TREE_COMMANDS, beadsLocalSyncRemoteLine, setupMemberBeads, verifyPinnedToolVersions } from '../fleet-sprint/beads-identity-check.mjs';
+import { BEADS_CONFLICTED_PULL_FIXED_IN, bdConflictedPullAffected } from '../fleet-sprint/tool-version-pin.mjs';
 import { BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion } from '../fleet-sprint/tool-version-pin.mjs';
 import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
 import { fleetDoltVersionCommand } from '../fleet-sprint/dolt-settle.mjs';
@@ -616,13 +617,21 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         assert.deepEqual(res.setUp, ['m1']);
     });
 
-    test('an existing matching DB is left untouched: zero set-up commands, no credential call', async () => {
+    test('an existing matching DB is not set up: zero set-up commands, one launch pull (credential refreshed for it)', async () => {
         const m1 = statefulMember({ ws: 'db', sync: REMOTE, origin: REMOTE });
         const h = setupHarness(m1);
         const res = await verify(h);
         assert.equal(setupCalls(h.calls).length, 0);
-        assert.ok(!h.order.includes('vcs:m1'));
+        assert.equal(h.calls.filter((c) => c.opts.member_name === 'm1' && c.cmd === DOLT_PULL).length, 1);
         assert.deepEqual(res.setUp, []);
+    });
+
+    test('a member without a DB still goes through the set-up path, not the launch pull', async () => {
+        const m1 = statefulMember({ ws: 'none' });
+        const h = setupHarness(m1);
+        const res = await verify(h, { launchPull: async () => assert.fail('launch pull must not run for a member being set up') });
+        assert.deepEqual(res.setUp, ['m1']);
+        assert.ok(setupCalls(h.calls).includes(BEADS_SETUP_COMMANDS.bootstrap));
     });
 
     test('a mismatching existing DB still fails as a MISMATCH, with no set-up attempted', async () => {
@@ -1001,6 +1010,30 @@ describe('verifyBeadsIdentity: bd/dolt version pin (checkToolVersions)', () => {
             assert.equal(isBeadsMutatingCommand(cmd), false, cmd);
             assert.equal(noteMemberCommand('probe-member', cmd), false, cmd);
         }
+    });
+
+    test('bd in the conflicted-pull link-loss range: exactly one WARNING line per affected member naming the risk; launch still succeeds', async () => {
+        const { command } = fakeCommand({ a: versionAnswers({ bd: 'bd version 1.3.0 (abc)' }) });
+        const logs = [];
+        const found = await verifyPinnedToolVersions({ command, members: ['a'], log: (l) => logs.push(l) });
+        assert.equal(found.a.bd, '1.3.0');
+        const warns = logs.filter((l) => l.startsWith(BEADS_IDENTITY_WARNING_PREFIX));
+        assert.equal(warns.length, 1, JSON.stringify(logs));
+        assert.match(warns[0], /member 'a'/);
+        assert.match(warns[0], /1\.3\.0/);
+        assert.match(warns[0], /conflicted dolt pull can silently drop parent-child and blocks links/);
+        assert.match(warns[0], /verified before push/);
+    });
+
+    test('bd outside the affected range: no link-loss WARNING; launch still succeeds', async () => {
+        const { command } = fakeCommand({ a: versionAnswers({ bd: `bd version ${BEADS_CONFLICTED_PULL_FIXED_IN} (abc)` }) });
+        // 1.4.0 is outside the pinned minor, so it is the pin check (not the warning) that speaks for it;
+        // exercise the range predicate directly alongside a launch that stays quiet.
+        assert.equal(bdConflictedPullAffected('1.4.0'), false);
+        assert.equal(bdConflictedPullAffected('2.0.0'), false);
+        assert.equal(bdConflictedPullAffected('1.3.99'), true);
+        assert.equal(bdConflictedPullAffected('garbage'), false);
+        await assert.rejects(() => verifyPinnedToolVersions({ command, members: ['a'] }), /outside the pinned version/);
     });
 
     test('verifyPinnedToolVersions alone: returns per-member found versions', async () => {

@@ -312,6 +312,11 @@
  * @property {number} [gpuUtilization] - Cloud members only.
  * @property {string|null} logTail - Last lines of task.log (credential values redacted).
  * @property {boolean} [autoStopped] - Set when auto_stop stopped the cloud instance.
+ * @property {Array<{name: string, change: 'rotated'|'deleted'|'expired'}>} [secretChanges] -
+ *   Present only when a {{secret.NAME}} the task resolved at launch has since been rotated,
+ *   deleted or has expired: the task still uses the old value. Never carries a value.
+ * @property {string} [secretWarning] - Present with secretChanges: the warning, with the
+ *   member-OS stop step and the relaunch instruction.
  */
 
 /**
@@ -365,6 +370,16 @@
  * @property {string} local_dest_dir - Local directory to write the downloaded files into
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
+ */
+
+/**
+ * structuredContent of a failed send_files / receive_files call. The MCP result then has
+ * isError true and its text is the human message; a full success is a plain text result with
+ * no isError and no structuredContent.
+ * @typedef {Object} TransferFailureStructuredContent
+ * @property {"transfer-failed"} error
+ * @property {"failed" | "partial" | "path-blocked" | "invalid-input" | "member-unavailable"} reason - failed: no file succeeded or the transfer threw; partial: some files failed; path-blocked: dest_subdir/remote_path outside the work folder; invalid-input: null bytes, basename collision, unreadable source, substitution failure; member-unavailable: member lookup/auth/key check failed
+ * @property {string} [detail] - the human text
  */
 
 /**
@@ -452,7 +467,7 @@
  * @property {{state: "missing" | "broken" | "version-mismatch", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member, or runs but is off the pinned major.minor (state "version-mismatch", E-BD-VERSION-MISMATCH); "missing" means neither on its PATH nor in <home>/.apra-fleet/bin; independent of state; absent when bd works or could not be probed
  * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
- * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
+ * @property {{previousVersion: string, removed: string[], backupPath: string, notes?: string[]}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, the timestamped backup directory on the member, and notes (e.g. the idle fleet-sprint supervisor stopped and restarted, or the command to restart it)
  * @property {string} [manualInstall] - Set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. no-matching-release, checksum-unavailable, download-failed): OS-correct manual steps to install the orchestrator build on the member by hand (anonymous release download URL, SHA-256 check, member-mode install, then update_member); register_member prints them in a WARNING and still succeeds; update_member also fails the call (isError) when fleet_install "auto"/"replace-full" was requested
  * @property {{tag: string, wantedBuild: string, why: string}} [sameCoreFallback] - Set when no release carries the orchestrator's exact build and the member had no apra-fleet or an older core, so the signed stable release of the same core (tag) was installed instead of wantedBuild; register_member/update_member print a NOTICE
  */
@@ -510,9 +525,21 @@
  * @property {CodeIntelStatus|null} [codeIntel] - Whether code intelligence (code_* tools) can run for this member,
  *   with the cause and remedy when it cannot (e.g. npx/node missing from the apra-fleet service PATH). null for
  *   remote members: their code tools run on the member host, not on this server.
- * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
+ * @property {Object} [llm_cli] - LLM CLI info: { version, auth, authNote }. auth names the
+ *   credential sources present: "none", or a "+"-joined list in this fixed order of "api-key" (an
+ *   API-key env var), "oauth-token" (an OAuth/setup-token env var, e.g. CLAUDE_CODE_OAUTH_TOKEN),
+ *   "oauth-login" (the provider's OAuth credentials file) -- e.g. "oauth-token",
+ *   "api-key+oauth-login". Same value as list_members llm_auth. authNote: with more than one source,
+ *   which one the CLI uses (e.g. "api-key takes precedence over oauth-login"); null otherwise.
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
- * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
+ * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status,
+ *   statusSource, busyPid, idleSecs }. status is "busy", "idle", "idle (unrelated <cli> processes
+ *   running)" or "unknown". statusSource names the signal that produced busy and is null otherwise:
+ *   "in-flight-dispatch" (this server has an execute_prompt running for the member; busyPid = its
+ *   stored dispatch pid) or "fleet-process" (the member-side probe found a fleet-launched CLI process
+ *   -- argv carries the dispatch prompt file plus this member's session id or quoted work folder;
+ *   busyPid = the matched pid). busyPid is null when no pid was captured. Processes of the same CLI
+ *   name that fleet did not launch never make a member busy.
  * @property {Object} [resources] - System resource snapshot: { cpu, memory, disk, gpu }
  * @property {string} [branch] - Current git branch in `folder`, when it is a git repo
  * @property {Object} [cloud] - Cloud instance details, for cloud-backed members only
@@ -901,6 +928,39 @@
  * @property {boolean} branch_aware - Whether the KB is branch aware.
  * @property {string[]} [query_filters] - Optional kb_query filters the KB honours
  *   (files, symbols); absent when the server does not list any.
+ * @property {{version: string, bible_rules: number}} [fleet_build] - The answering
+ *   fleet server's own build (not the KB server's): its version string and the
+ *   integer revision of the bible format / kb_bible_commit rules it implements.
+ *   Added on both providers by servers that report it; a caller about to run
+ *   kb_bible_commit refuses a missing or lower bible_rules than it requires.
+ */
+
+/**
+ * @typedef {Object} KbPromoteOptions
+ * @property {string} id - ID of the KB entry to promote.
+ * @property {string} [reason] - The evidence checked for this promotion; appended to the
+ *   entry content as the audit trail (the server refuses a promotion without a non-trivial
+ *   reason). Promoting an already-CONFIRMED entry is an explicit re-verification: a basis
+ *   that drifted from HEAD is re-stamped at HEAD and reported as rebased.
+ */
+
+/**
+ * @typedef {Object} KbPromoteResult
+ * @property {string} id - The promoted entry.
+ * @property {string} previous_confidence - Tier before the call.
+ * @property {string} new_confidence - Tier after the call (unchanged for an already-CONFIRMED entry).
+ * @property {boolean} [basis_stamped] - True when the source-file basis was (re)written from
+ *   the cited files at the repo HEAD commit; false outside a git work tree, when no cited file
+ *   could be stamped, or for a CONFIRMED entry whose basis already matched HEAD.
+ * @property {boolean} [rebased] - Only for an already-CONFIRMED entry: true when its drifted
+ *   basis was re-stamped at HEAD, false when it already matched.
+ * @property {string[]} [previous_basis_files_changed] - Stamped files whose stored basis was
+ *   missing or differed from HEAD before the call.
+ * @property {{path: string, reason: string}[]} [unstamped_files] - Cited files NOT stamped,
+ *   keeping their previous basis hash: reason absent_at_head (no blob at HEAD) or
+ *   uncommitted_edit (the work tree differs from HEAD).
+ * @property {string} [basis_stamp_unsupported] - Remote (http) KB only: an
+ *   E-KB-HTTP-UNSUPPORTED message when the KB server's reply carries no basis_stamped.
  */
 
 /**
@@ -1009,14 +1069,17 @@
  * @property {string[]} withdrawn - Ids admitted from `withdrawals`: removed from entries and
  *   tombstoned "withdrawn"; the local entry is not changed.
  * @property {string[]} restored - Ids from `restore_ids` whose branch-added tombstone was removed.
- * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
+ * @property {{id: string, reason: string, changed_files?: {path: string, reason: string}[]}[]} skipped - Ids not merged, demoted or withdrawn, with
  *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown,
  *   not_withdrawable, withdrawn_tombstone (an `ids` id the bible file carries a withdrawn
  *   tombstone for, not restored by the same call, or a demoted_ids id with a withdrawn
  *   tombstone in the file -- a demoted tombstone never replaces a withdrawn one; the
  *   tombstone is kept) or not_in_base_bible (a demoted_ids id the bible at baseCommit does
  *   not carry), or demoted_tombstone (an `ids` id the file carries a demoted tombstone for whose
- *   trust time is not after the tombstone; the tombstone is kept).
+ *   trust time is not after the tombstone; the tombstone is kept). A basis_mismatch item
+ *   carries changed_files: each cited or basis file behind it with reason changed (differs
+ *   at HEAD), absent (no blob at HEAD) or no_basis (no stored hash); re-verify the entry with
+ *   kbPromote to re-stamp its basis at HEAD.
  * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
  *   superseded or invalidated, or (reason tombstoned) because the file also carries a
  *   tombstone for the id (the tombstone wins).
@@ -1359,7 +1422,9 @@ export class ApraFleet {
     }
 
     /**
-     * List all fleet members and their current status.
+     * List all fleet members and their current status. Each member's llm_auth is "N/A" (local and
+     * relay members), "offline", or the credential label member_detail reports as llm_cli.auth
+     * ("none", or "+"-joined "api-key" / "oauth-token" / "oauth-login").
      * @param {ListMembersOptions} [options]
      */
     async listMembers(options = {}) {
@@ -1408,7 +1473,8 @@ export class ApraFleet {
     }
 
     /**
-     * Transfer local files to a member.
+     * Transfer local files to a member. A failed, partial or refused transfer has isError true
+     * with a {@link TransferFailureStructuredContent}.
      * @param {SendFilesOptions} options
      */
     async sendFiles(options) {
@@ -1416,7 +1482,8 @@ export class ApraFleet {
     }
 
     /**
-     * Download files from a member to a local directory.
+     * Download files from a member to a local directory. A failed, partial or refused transfer
+     * has isError true with a {@link TransferFailureStructuredContent}.
      * @param {ReceiveFilesOptions} options
      */
     async receiveFiles(options) {
@@ -1586,7 +1653,8 @@ export class ApraFleet {
      * backfill; only that field changes, nothing is dropped); a backfill alone
      * makes a commit. Each skipped item is
      * {id, reason} with reason not_confirmed_or_unknown, no_source_files (a
-     * CONFIRMED id citing no source file), basis_mismatch or
+     * CONFIRMED id citing no source file), basis_mismatch (with changed_files:
+     * [{path, reason: changed|absent|no_basis}]) or
      * not_demoted_or_unknown (a demoted_ids id). Each removed item is {id, reason}
      * with reason superseded or invalidated. A member session without the
      * kb_maintainer grant cannot retire a CONFIRMED entry through the kb_* tools:
@@ -1630,6 +1698,24 @@ export class ApraFleet {
     async kbQuery(options) {
         assertNoRemovedKbScopeKeys('kb_query', options);
         return this.mcpClient.callTool('kb_query', options);
+    }
+
+    /**
+     * Raise a KB entry one tier (UNVERIFIED -> INFERRED -> CONFIRMED), appending
+     * the reason as the audit trail. In a git work tree the entry's source-file
+     * basis is stamped from the cited files at HEAD (a file absent at HEAD or
+     * with an uncommitted edit keeps its previous hash, listed in
+     * unstamped_files); on an already-CONFIRMED
+     * entry a basis that drifted from HEAD is re-stamped (rebased: true), so a
+     * following kbBibleCommit admits it. Result JSON: KbPromoteResult; extract
+     * with parseToolJson(). A member session is served kb_promote only with the
+     * kb_maintainer grant. The removed scope keys (repo_path, repo,
+     * repo_remote_url) are refused with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbPromoteOptions} options
+     */
+    async kbPromote(options) {
+        assertNoRemovedKbScopeKeys('kb_promote', options);
+        return this.mcpClient.callTool('kb_promote', options);
     }
 
     /**

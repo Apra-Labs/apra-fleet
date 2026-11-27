@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 import { checkRunningInstance } from '../services/singleton.js';
 import { SERVER_INFO_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
@@ -82,7 +83,7 @@ export async function runStop(_args: string[]): Promise<void> {
       return;
     }
     if (process.platform === 'win32') {
-      try { execFileSync('taskkill', ['/F', '/PID', String(pid)], { stdio: 'pipe', windowsHide: true, timeout: 10_000 }); } catch {}
+      try { execFileSync(windowsExecutable('taskkill'), ['/F', '/PID', String(pid)], { stdio: 'pipe', windowsHide: true, timeout: 10_000 }); } catch {}
     } else {
       try { process.kill(pid, 'SIGKILL'); } catch {}
     }

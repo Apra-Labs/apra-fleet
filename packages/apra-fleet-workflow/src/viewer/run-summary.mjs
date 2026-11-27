@@ -10,6 +10,18 @@
 // extension registered for that namespace returns from its optional
 // `summarize(data)` hook -- computed ONCE per publish of that namespace,
 // never per request. Core knows nothing about any extension's data shape.
+//
+// Timing fields (additive; SUMMARY_VERSION stays 1 -- no existing field
+// changed name or meaning, and consumers only test for its presence):
+//   startedAt  ISO-8601 string, when the run started.
+//   elapsedMs  live milliseconds since the run started while it is running
+//              (recomputed on every read of GET /state?summary=1), and the
+//              final duration once it has ended.
+//   durationMs always equal to elapsedMs (0 would be misleading while
+//              running; at the end both are the final duration).
+// The summary is served as-is and is never lean-encoded, so startedAt and
+// the other strings here are always plain strings (no ref marker, no
+// _strings table).
 
 export const SUMMARY_VERSION = 1;
 
@@ -22,6 +34,9 @@ export function createRunSummary(runId) {
         summaryVersion: SUMMARY_VERSION,
         runId,
         status: 'running',
+        startedAt: null,
+        elapsedMs: 0,
+        durationMs: 0,
         phase: null,
         pause: { status: 'none', reason: null, since: null, phase: null, group: null, resumeAt: null },
         terminalReason: null,
@@ -41,6 +56,19 @@ export function createRunSummary(runId) {
  */
 export function refreshSummaryCore(summary, state, phaseTitle) {
     summary.status = state.status;
+    summary.startedAt = state.startedAt ?? null;
+    const startMs = typeof state.stats?.startTime === 'number' ? state.stats.startTime : Date.parse(state.startedAt);
+    let elapsed = 0;
+    if (state.endedAt) {
+        // Ended: the final duration the 'end' handler recorded; a signal
+        // shutdown records none, so derive it from the end timestamp.
+        const recorded = state.stats?.durationMs;
+        elapsed = recorded > 0 ? recorded : Math.max(0, Date.parse(state.endedAt) - startMs) || 0;
+    } else if (Number.isFinite(startMs)) {
+        elapsed = Math.max(0, Date.now() - startMs);
+    }
+    summary.elapsedMs = elapsed;
+    summary.durationMs = elapsed;
     summary.phase = phaseTitle ?? null;
     const p = state.pause || {};
     summary.pause = {

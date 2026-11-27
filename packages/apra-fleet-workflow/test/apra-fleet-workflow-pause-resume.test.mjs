@@ -552,3 +552,86 @@ describe('command() pauseExempt option', () => {
         });
     });
 });
+
+// requestPause() returns a pause-end handle whose `ended` promise resolves
+// exactly once, reporting whether the pause ended by a resume or a stop. A
+// script waiting on its own timer during the pause uses it to wake early.
+describe('requestPause() pause-end handle', () => {
+    const settledWithin = (p) => Promise.race([p, new Promise((r) => setImmediate(() => r('pending')))]);
+
+    test('an operator resume settles the handle as resume, with the resume reason', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const handle = wf.requestPause('usage limit');
+        assert.ok(handle && typeof handle.ended.then === 'function', 'requestPause returns a handle with an ended promise');
+        assert.strictEqual(await settledWithin(handle.ended), 'pending', 'pending while paused');
+        await wf.requestResume('operator resume via dashboard');
+        assert.deepStrictEqual(await handle.ended, { outcome: 'resume', reason: 'operator resume via dashboard' });
+    });
+
+    test('requestStop() settles the handle as stop, with the stop reason', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const handle = wf.requestPause('usage limit');
+        wf.requestStop('operator stop');
+        assert.deepStrictEqual(await handle.ended, { outcome: 'stop', reason: 'operator stop' });
+    });
+
+    test('the handle settles exactly once: a later stop after a resume does not change it', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const handle = wf.requestPause('usage limit');
+        let settles = 0;
+        handle.ended.then(() => { settles += 1; });
+        await wf.requestResume('first');
+        wf.requestStop('later stop');
+        await nextTick();
+        assert.strictEqual(settles, 1);
+        assert.deepStrictEqual(await handle.ended, { outcome: 'resume', reason: 'first' });
+    });
+
+    test('requestPause while a pause is pending returns the SAME pending pause handle and emits nothing new', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        let requested = 0;
+        wf.on('pause:requested', () => { requested += 1; });
+        const first = wf.requestPause('first');
+        const second = wf.requestPause('second');
+        assert.strictEqual(requested, 1);
+        assert.strictEqual(second, first);
+        await wf.requestResume('go');
+        assert.deepStrictEqual(await second.ended, { outcome: 'resume', reason: 'go' });
+        // After the pause ended, a new requestPause starts a new handle.
+        const third = wf.requestPause('third');
+        assert.notStrictEqual(third, first);
+        assert.strictEqual(await settledWithin(third.ended), 'pending');
+        await wf.requestResume();
+    });
+
+    test('a rejecting pre-resume hook leaves the handle pending (the pause did not end)', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        wf.setPreResumeHook(async () => { throw new Error('re-reserve failed'); });
+        const handle = wf.requestPause('usage limit');
+        await assert.rejects(wf.requestResume('try'));
+        assert.strictEqual(await settledWithin(handle.ended), 'pending');
+        wf.requestStop('give up');
+        assert.strictEqual((await handle.ended).outcome, 'stop');
+    });
+
+    test('a pause requested inside a run after requestStop() returns a handle already settled as stop', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        await wf.runWithContext({}, async (ctx) => {
+            wf.requestStop('stopped first');
+            const handle = ctx.requestPause('late pause');
+            const end = await settledWithin(handle.ended);
+            assert.strictEqual(end.outcome, 'stop');
+        });
+    });
+
+    test('callers ignoring the return value behave as before (pause, resume, events)', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const events = [];
+        for (const e of ['pause:requested', 'paused', 'resumed']) wf.on(e, () => events.push(e));
+        wf.requestPause('manual');
+        await wf.requestResume('manual');
+        assert.deepStrictEqual(events, ['pause:requested', 'paused', 'resumed']);
+        assert.strictEqual(wf._paused, false);
+        assert.strictEqual(wf._pauseEnd, null, 'no handle left pending after the pause ended');
+    });
+});

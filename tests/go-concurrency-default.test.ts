@@ -64,8 +64,13 @@ describe('remote Windows member command strings carry the GOMAXPROCS default', (
       + `if [ -n "$_fleet_wpid" ]; then printf 'FLEET_PID:%s\\n' "$_fleet_wpid"; fi; `;
     const linuxLaunch = linux.buildAgentPromptCommand(claude, winOpts as never);
     expect(linuxLaunch).toContain(linuxEmit);
+    // ...and the subshell's builtin tail that stops bash exec-optimizing the
+    // command away from the reported winpid (see pidWrapGitBash).
+    const linuxClose = '; } & _fleet_pid=$!; ';
+    const gitbashClose = '; _fleet_rc=$?; exit $_fleet_rc; } & _fleet_pid=$!; ';
+    expect(linuxLaunch).toContain(linuxClose);
     expect(gb.buildAgentPromptCommand(claude, winOpts as never))
-      .toBe(`${GO_MAXPROCS_DEFAULT_GITBASH}${linuxLaunch.replace(linuxEmit, gitbashEmit)}`);
+      .toBe(`${GO_MAXPROCS_DEFAULT_GITBASH}${linuxLaunch.replace(linuxEmit, gitbashEmit).replace(linuxClose, gitbashClose)}`);
     expect(gb.wrapInWorkFolder('/c/w', 'bd dolt pull'))
       .toBe(`${GO_MAXPROCS_DEFAULT_GITBASH}cd "/c/w" && export PATH="$PATH:$HOME/.apra-fleet/bin" && bd dolt pull`);
   });

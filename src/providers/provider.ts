@@ -767,6 +767,14 @@ export interface ProviderAdapter {
   authEnvVarNames?(): string[];
 
   /**
+   * What kind of credential an auth env var (one of authEnvVarNames, or
+   * authEnvVar) holds: an API key, or an OAuth/setup token. member_detail and
+   * list_members label the member's auth from it. Optional -- a provider that
+   * does not implement it has every auth env var reported as 'api-key'.
+   */
+  authEnvVarKind?(name: string): 'api-key' | 'oauth-token';
+
+  /**
    * A warning when the token's shape is not one this provider recognises
    * (the env var chosen for it is then a guess), or null when recognised.
    * Must be pure -- preflight probes authEnvVarForToken with fake tokens.

@@ -275,16 +275,11 @@ describe('HttpKbProvider capabilities', () => {
     ]);
   });
 
-  // Reads answered 5xx or 429: never a raw HTTP error. 429/503 are
-  // E-KB-HTTP-UNREACHABLE, any other 5xx E-KB-HTTP-SERVER-ERROR; each names
-  // the request and the status.
-  for (const [status, Expected, code] of [
-    [429, KbHttpUnreachableError, 'E-KB-HTTP-UNREACHABLE'],
-    [503, KbHttpUnreachableError, 'E-KB-HTTP-UNREACHABLE'],
-    [500, KbHttpServerError, 'E-KB-HTTP-SERVER-ERROR'],
-    [502, KbHttpServerError, 'E-KB-HTTP-SERVER-ERROR'],
-  ] as const) {
-    it(`query, context, prime and list answered ${status} are each ${code} naming the request and the status`, async () => {
+  // Reads answered 5xx or 429: never a raw HTTP error. Every one is
+  // E-KB-HTTP-UNREACHABLE (a read writes nothing, so it is safe to repeat);
+  // each names the request and the status.
+  for (const status of [429, 500, 502, 503, 504]) {
+    it(`query, context, prime and list answered ${status} are each E-KB-HTTP-UNREACHABLE naming the request and the status`, async () => {
       answers.set('/api/kb/capabilities', capabilities(['capture', 'query', 'promote', 'context', 'prime', 'list']));
       for (const route of ['query', 'context', 'prime', 'list']) {
         answers.set(`/api/kb/${route}`, { status, body: { error: 'Server busy' } });
@@ -297,9 +292,9 @@ describe('HttpKbProvider capabilities', () => {
       ];
       for (const [method, route, call] of calls) {
         const err = await call().then(() => null, (e: unknown) => e);
-        expect(err, route).toBeInstanceOf(Expected);
-        expect((err as Error).message, route).toMatch(new RegExp(`^${code}: ${method} /api/kb/${route}: .*HTTP ${status}`));
-        if (code === 'E-KB-HTTP-SERVER-ERROR') expect((err as Error).message, route).toMatch(/nothing was read/);
+        expect(err, route).toBeInstanceOf(KbHttpUnreachableError);
+        expect(err, route).not.toBeInstanceOf(KbHttpServerError);
+        expect((err as Error).message, route).toMatch(new RegExp(`^E-KB-HTTP-UNREACHABLE: ${method} /api/kb/${route}: .*HTTP ${status}`));
       }
     });
   }

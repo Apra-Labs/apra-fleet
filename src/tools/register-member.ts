@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { planEnv, windowsCommand, type WindowsCommandPlan } from '../os/windows-command.js';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
@@ -117,6 +118,31 @@ export function __resetInteractiveBootstrapDeps(): void {
   interactiveBootstrapDeps = realInteractiveBootstrapDeps;
 }
 
+/**
+ * Start the detached interactive claude for a local member in its work folder.
+ * Off win32 the spawn is unchanged (bare name, shell:true). On win32 the bare
+ * name under shell:true made cmd.exe search the work folder first, so a
+ * planted claude.cmd ran as the fleet-server user; there claude is resolved
+ * to an absolute plan over absolute PATH entries only
+ * (src/os/windows-command.ts) and a missing claude throws a typed error
+ * naming the searched locations. Exported for tests (the bootstrap itself is
+ * gated off, see interactiveBootstrapEnabled).
+ */
+export function launchInteractiveClaude(
+  workFolder: string,
+  spawnFn: typeof spawn = interactiveBootstrapDeps.spawn,
+  resolve: (name: string) => WindowsCommandPlan | null = windowsCommand,
+): ChildProcess {
+  const args = ['--dangerously-load-development-channels'];
+  const plan = resolve('claude');
+  if (!plan) {
+    return spawnFn('claude', args, { cwd: workFolder, detached: true, stdio: 'ignore', shell: true });
+  }
+  return spawnFn(plan.file, [...plan.args, ...args], {
+    cwd: workFolder, detached: true, stdio: 'ignore', shell: plan.shell, env: planEnv(plan),
+  });
+}
+
 function interactiveBootstrapEnabled(): boolean {
   // Disabled until the interactive-bootstrap lifecycle is fixed: the detached
   // `claude --dangerously-load-development-channels` process this spawns has
@@ -166,6 +192,8 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
+    // Key auth needs a key: without one registration would succeed and every SSH call fail later.
+    if (input.auth_type === 'key' && !input.key_path) return '[ERR] "key_path" is required when auth_type is "key". Member was NOT registered.';
   }
 
   // unreservable is reserved for members that never receive a real agent
@@ -640,7 +668,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     }
 
     try {
-      const proc = interactiveBootstrapDeps.spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
+      const proc = launchInteractiveClaude(input.work_folder);
       proc.unref();
       if (proc.pid) {
         sessionRegistry.register({

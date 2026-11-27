@@ -24,15 +24,15 @@ commit.
 `bd flatten` (and `bd compact`) rewrite Dolt history: they discard the
 existing commit chain and replace it with a fresh one that has **no shared
 ancestor** with any existing clone. This is not an ordinary merge conflict --
-it is an unrelated-history situation. No automated self-heal exists for it
-today (see `apra-fleet-417.10`: this was proposed and designed but never
-implemented). The only way any *other* clone recovers is to discard its
-local `.beads/` state and re-bootstrap fresh from the rewritten remote.
+it is an unrelated-history situation. The only way any *other* clone
+recovers is to set its local `.beads/` aside and re-bootstrap fresh from the
+rewritten remote. There is no way to "merge forward".
 
-In practice this means: once you run this procedure, every other fleet
-member's beads clone is stale and broken until it is manually
-re-bootstrapped. There is no way to "merge forward" -- members have no
-choice but to throw away their local `.beads/` and re-clone.
+The next sprint launch does that automatically for every clone it touches
+(see "Recovering every other clone" below), but it REFUSES a clone that holds
+work the rewritten remote does not -- so the prerequisites below still
+matter: unpushed work found after the flatten stops the launch until someone
+replays it by hand.
 
 ## Prerequisites (do not skip)
 
@@ -152,11 +152,78 @@ git fetch origin refs/dolt/data
 git ls-tree -r -l FETCH_HEAD | awk '{s+=$4} END {print s}'
 ```
 
+## How the engine recognises the unrelated-history failure
+
+A clone whose Dolt history shares no ancestor with the remote fails
+`bd dolt pull` with (verbatim, pinned bd 1.3.0 / dolt 2.0.1; full capture in
+`test/fixtures/dolt-unrelated-history/unrelated-history.txt`, re-recorded by
+`record-unrelated-history.mjs` in a temp sandbox):
+
+```
+Error: merge origin/main: Error 1105: no common ancestor
+Local and remote Dolt histories have diverged. ... no common merge base.
+```
+
+The sync classifier reports this as its own kind, `unrelated-history`
+(checked before `diverged`, because the text also says "diverged"), and D-pull
+and D-push throw `DoltUnrelatedHistoryError` carrying the raw output without
+running settle (settle needs a common ancestor). Recovery is automatic at the
+next sprint launch, or the manual re-bootstrap below.
+
+Observed on the pinned bd: `bd flatten --force` followed by
+`bd dolt remote reset-data origin --yes` did NOT by itself produce this error
+for a bootstrapped clone -- flatten keeps the original root commit, so a
+following `bd dolt pull` merged cleanly. The error does appear for a clone
+whose database was created by its own `bd init` (independent history).
+
 ## Recovering every other clone
 
-This is the mandatory follow-up step on **every other fleet member and
-checkout** (dev checkouts, deploy checkouts, the orchestrator folder, any
-local scratch clones) -- there is no automated version of this today.
+### Automatic, at the next sprint launch
+
+A sprint launch recovers the clones it pulls: the backlog/orchestrator clone
+(the launch's beads-health gate) and any member clone the beads preflight
+sets up. When the pull fails with the unrelated-history error, the engine
+(`fleet-sprint/beads-flatten-recovery.mjs`, also behind `DoltSync.repair()`
+for operators and tools):
+
+1. exports the clone (`bd export --all -o .beads/flatten-recovery-local.jsonl`)
+   and reads it back, before anything destructive;
+2. renames `.beads` to `.beads.flatten-pending-<stamp>` (never deletes it),
+   seeds a new `.beads` with the old `config.yaml`/`config.local.yaml`,
+   checks `bd bootstrap --dry-run --json` would clone from the sync remote,
+   runs `bd bootstrap --yes` and exports the fresh clone into the backup;
+3. compares the two exports: a bead is local-only work when its id is not
+   in the fresh export or its local `updated_at` is newer (a memory: its
+   value differs);
+4. with no local-only work: checks `bd status`, renames the backup to
+   `.beads.flatten-backup-<stamp>` and logs one
+   `[beads-flatten-recovery] WARNING:` line naming the member, the backup
+   path and that the remote was flattened. The launch continues;
+5. with local-only work: REFUSES. The fresh clone is dropped, the original
+   `.beads` is renamed back (left as it was, plus the two export files) and
+   the launch fails with `BEADS_FLATTEN_RECOVERY_REFUSED`, naming the ids,
+   the export path and the fix. Nothing is replayed automatically.
+
+Any step failing after the rename puts the original `.beads` back before the
+launch fails (`BEADS_FLATTEN_RECOVERY_FAILED`, naming the step). A launch that
+finds a `.beads.flatten-pending-*` folder (a recovery that crashed), or no
+`.beads` next to a `.beads.flatten-backup-*`, restores it before anything else
+runs. The backup and export names are added to the member's git
+`info/exclude`, so they never reach a commit. Every command is built for the
+member's own OS and shell (POSIX or PowerShell).
+
+**Fixing a refusal:** in that member's work folder, keep
+`.beads/flatten-recovery-local.jsonl`, then follow the manual steps below and
+re-create the listed beads' changes on the new clone (`bd create` /
+`bd update`, using the export as the source), `bd dolt push`, and relaunch.
+
+When the recovery succeeded, delete the `.beads.flatten-backup-*` folder once
+the clone is verified.
+
+### Manual, for clones no sprint launch touches
+
+Every other checkout (dev checkouts, deploy checkouts, local scratch clones,
+and member clones the launch does not pull) still needs this by hand.
 
 First, in each clone, run `bd export` and compare it with the source's
 pre-flatten export: a write that landed after the prerequisite check is lost
@@ -187,7 +254,11 @@ backups.
 - Track how many months/weeks elapse between runs and how long `bd dolt
   pull`/`bd list` took just before this run vs. just after, so degradation
   can be tracked over time.
-- `apra-fleet-417.10` remains open, unimplemented design work to make the
-  "recover every other clone" step automatic (scoped export before
-  discard, re-bootstrap, replay). Until that lands, the manual
-  re-bootstrap step above is the only recovery path.
+- The sprint launch recovers the clones it pulls automatically (see
+  "Recovering every other clone"); a refusal there means a clone held work
+  that was not pushed before the flatten -- check the prerequisites were
+  really met. Clones no launch touches still need the manual steps.
+- On the pinned bd, `bd flatten --force` plus
+  `bd dolt remote reset-data origin --yes` kept the root commit, so
+  bootstrapped clones pulled cleanly afterwards; the automatic recovery
+  matters when a remote is rebuilt from an independent history.

@@ -65,6 +65,44 @@
             },
             "new_confidence": {
               "type": "string"
+            },
+            "basis_stamped": {
+              "type": "boolean"
+            },
+            "rebased": {
+              "type": "boolean"
+            },
+            "previous_basis_files_changed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unstamped_files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "absent_at_head",
+                      "uncommitted_edit"
+                    ]
+                  }
+                },
+                "required": [
+                  "path",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "basis_stamp_unsupported": {
+              "type": "string"
             }
           },
           "required": [

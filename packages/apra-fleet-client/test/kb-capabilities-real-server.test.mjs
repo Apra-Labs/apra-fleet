@@ -85,6 +85,8 @@ describe(
             assert.ok(Array.isArray(parsed.routes) && parsed.routes.length > 0, 'routes must be a non-empty array');
             assert.ok(parsed.routes.every((r) => typeof r === 'string'));
             assert.strictEqual(typeof parsed.branch_aware, 'boolean');
+            assert.strictEqual(typeof parsed.fleet_build?.version, 'string', 'fleet_build.version must be the server version string');
+            assert.ok(Number.isInteger(parsed.fleet_build?.bible_rules), 'fleet_build.bible_rules must be an integer revision');
         });
     },
 );

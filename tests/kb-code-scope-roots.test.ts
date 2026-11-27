@@ -55,6 +55,7 @@ import { SessionRootsCache, toSessionRoots } from '../src/services/session-roots
 import { resolveSelfAnchor, resolveSelfSession, KbSelfError, validateSelfFolder } from '../src/services/knowledge/kb-self.js';
 import { resolveCodeSelf, PROVIDERS, type CodeIntelligenceProvider } from '../src/tools/code-intelligence.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from './test-helpers.js';
+import { FLEET_DIR } from '../src/paths.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -303,6 +304,19 @@ describe('FULL session scope from client roots (resolver)', () => {
       expect(err.message).toContain('the client offered no MCP roots');
       expect(err.message).toContain(`'${dirs.cwdPlain}' is not a git repository`);
       expect(err.message).toContain('Open the client in the repository');
+    }
+  });
+
+  it('no roots and the server running in its data dir (apra-fleet start): E-SELF-NOT-A-REPO naming the data dir, no restart-in-repo advice', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(FLEET_DIR);
+    for (const resolve of [() => resolveSelfAnchor(), () => resolveCodeSelf()]) {
+      const err = asFull(undefined, () => selfError(resolve));
+      expect(err.code).toBe('E-SELF-NOT-A-REPO');
+      expect(err.message).toContain('the client offered no MCP roots');
+      expect(err.message).toContain(`its data dir '${FLEET_DIR}'`);
+      expect(err.message).toContain("'apra-fleet start' always runs it there");
+      expect(err.message).not.toContain('restart the fleet server');
+      expect(err.message.split('Remediation:').length - 1).toBe(1);
     }
   });
 

@@ -2,7 +2,7 @@ import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord, gitResetParamWords } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, FLEET_TASK_PROMPT_FILE, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord, gitResetParamWords } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
@@ -44,6 +44,28 @@ import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
  * already-gone file) into a false non-zero exit, which is why the fallback
  * stays `exit 0` rather than propagating `$?`.
  */
+/**
+ * PowerShell statements for fleetProcessCheck, shared by WindowsCommands and
+ * WindowsGitBashCommands (both wrap them with wrapPowerShellEncoded). Reads command lines through Win32_Process (on PS 5.1
+ * Get-Process objects carry no CommandLine) and keeps if/elseif/else in ONE
+ * statement (PS 5.1 rejects `; elseif`). A process counts as fleet-launched
+ * only when its command line carries the dispatch marker
+ * (FLEET_TASK_PROMPT_FILE) AND the session id or the quoted work folder --
+ * .Contains() keeps both literal. Prints idle | fleet-busy <pid> | other-busy.
+ */
+export function fleetProcessCheckPs(folder: string, sessionId: string | undefined, pname: string): string[] {
+  if (!/^[A-Za-z0-9._-]+$/.test(pname)) throw new Error('Invalid process name: ' + pname);
+  const lit = (v: string) => escapePowerShellArgInner(v);
+  const owners = [`$_.CommandLine.Contains('"${lit(folder)}"')`];
+  if (sessionId) owners.push(`$_.CommandLine.Contains('${lit(sanitizeSessionId(sessionId))}')`);
+  return [
+    `$ProgressPreference = 'SilentlyContinue'`,
+    `$procs = @(Get-CimInstance Win32_Process -Filter "Name LIKE '${pname}%'" -ErrorAction SilentlyContinue)`,
+    `$fleet = @($procs | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${lit(FLEET_TASK_PROMPT_FILE)}') -and (${owners.join(' -or ')}) })`,
+    `if ($procs.Count -eq 0) { echo 'idle' } elseif ($fleet.Count -gt 0) { echo ('fleet-busy ' + $fleet[0].ProcessId) } else { echo 'other-busy' }`,
+  ];
+}
+
 export function wrapPowerShellEncoded(psScript: string): string {
   const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
   const encoded = Buffer.from(guarded, 'utf16le').toString('base64');
@@ -169,15 +191,9 @@ export class WindowsCommands implements OsCommands {
 
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
     if (processName === '') return "echo 'idle'";
-    const pname = processName ?? 'claude';
-    const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
-    const sessionFilter = sessionId ? ` -or $_.CommandLine -match '${escapeWindowsArg(sanitizeSessionId(sessionId))}'` : '';
-    return [
-      `$procs = Get-Process ${pname} -ErrorAction SilentlyContinue`,
-      `if (-not $procs) { echo 'idle' }`,
-      `elseif ($procs | Where-Object { $_.CommandLine -match '${escapedFolder}'${sessionFilter} }) { echo 'fleet-busy' }`,
-      `else { echo 'other-busy' }`,
-    ].join('; ');
+    // Encoded so the folder/session literals never pass through the member's
+    // exec shell (cmd.exe, PowerShell 5.1/7) -- shell-agnostic as a string.
+    return wrapPowerShellEncoded(fleetProcessCheckPs(folder, sessionId, processName ?? 'claude').join('\n'));
   }
 
   // --- Generic agent CLI ---
