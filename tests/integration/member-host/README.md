@@ -21,9 +21,26 @@ rollback paths from the latest release, on a disposable Windows VM.
   scenario plan, verdict + report). Unit tests: `tests/member-host-harness.test.ts`,
   `tests/member-host-scenarios.test.ts`.
 
-Passes: Q (quote-led commands), RF (replace-full), RB (rollback), RFS / RBS
-(same with a supervisor running: refuse with E-FLEET-SE-RUNNING, change
-nothing, then succeed once it is stopped).
+Passes: Q (quote-led commands), RF (replace-full), RB (rollback), RFS
+(replace-full refuses while a sprint runs, reason fleet-se-running, changing
+nothing; with only the idle supervisor left it stops it itself and replaces),
+RBS (the rollback's reinstall refuses with E-FLEET-SE-RUNNING under a
+supervisor, changing nothing, then succeeds once it is stopped).
+
+How the driver talks to the member:
+- Exit codes and output come from execute_command's structuredContent
+  (exitCode, stdout); a nonzero exit is not an MCP isError. User-only
+  `<apra-fleet-display>` items are dropped (`lib/mcp-result.mjs`).
+- The member is registered as a claude member with fleet_install skip: only
+  claude / opencode members get a member install.
+- The orchestrator runs on its own port (`lib/sandbox.mjs` ORCHESTRATOR_PORT):
+  the member is another user on the same host, and its installs bind 7523.
+- The supervisor and the stand-in sprint (a node process holding a sprint
+  lock, which the install guard counts) start through WMI, outside the SSH
+  session's job, so they outlive it. The candidate's own `fleet-se-check`,
+  copied to the member home, detects them (the release binary has no such verb).
+- RFS copies the release's `workflows/` aside before its replace-full; RBS
+  starts its supervisor from that copy (a member install has no fleet-sprint).
 
 The rollback (`lib/rollback.mjs`) restores from the newest
 `$HOME/.apra-fleet-replace-backup-*` that replace-full made (data/, fleet.key,

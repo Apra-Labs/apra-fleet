@@ -10,7 +10,8 @@ import path from 'node:path';
 import { DISPOSABLE_FLAG, DISPOSABLE_PS_SWITCH, disposableRefusal } from './integration/member-host/lib/opt-in.mjs';
 import { QUOTE_LED_CASES, verifyEcho, gitBashPath, memberWorkFolder } from './integration/member-host/lib/commands.mjs';
 import { spawnSync } from 'node:child_process';
-import { assertInside, isInside, resolveSandbox, sandboxEnv } from './integration/member-host/lib/sandbox.mjs';
+import { assertInside, isInside, resolveSandbox, sandboxEnv, ORCHESTRATOR_PORT } from './integration/member-host/lib/sandbox.mjs';
+import { toolResult, execOutcome } from './integration/member-host/lib/mcp-result.mjs';
 import { wrapPosixEncoded } from '../src/services/member-fleet-install.js';
 
 const HARNESS = path.join(__dirname, 'integration', 'member-host');
@@ -152,6 +153,29 @@ describe('member-host quote-led command cases', () => {
   });
 });
 
+describe('member-host MCP result reading', () => {
+  const display = { type: 'text', text: '<apra-fleet-display>\n Apra Fleet \n</apra-fleet-display>', annotations: { audience: ['user'], priority: 1 } };
+
+  it('drops the user-only display block and reads the exit code and stdout from structuredContent', () => {
+    const r = toolResult({ content: [display, { type: 'text', text: 'Exit code: 0\nalpha|be ta|gamma' }], structuredContent: { exitCode: 0, stdout: 'alpha|be ta|gamma', stderr: '' } });
+    expect(r.text).toBe('Exit code: 0\nalpha|be ta|gamma');
+    const e = execOutcome(r);
+    expect(e).toEqual({ exitCode: 0, stdout: 'alpha|be ta|gamma', stderr: '', failure: null });
+    expect(verifyEcho(QUOTE_LED_CASES[0], e.stdout).ok).toBe(true);
+  });
+
+  it('a nonzero exit is the command\'s exit code even though the MCP result is not isError', () => {
+    const e = execOutcome(toolResult({ content: [{ type: 'text', text: 'Exit code: 1\n[stderr]\nE-PORT' }], structuredContent: { exitCode: 1, stdout: '', stderr: 'E-PORT' } }));
+    expect(e.exitCode).toBe(1);
+  });
+
+  it('a command that never produced an exit code, or a result without structuredContent, is -1, never 0', () => {
+    expect(execOutcome(toolResult({ content: [{ type: 'text', text: 'timed out' }], structuredContent: { exitCode: -1, stdout: '', stderr: 'x', isError: true, reason: 'timeout' } })))
+      .toMatchObject({ exitCode: -1, failure: 'timeout' });
+    expect(execOutcome(toolResult({ content: [{ type: 'text', text: 'Exit code: 0\nok' }] }))).toMatchObject({ exitCode: -1, failure: 'no-structured' });
+  });
+});
+
 describe('member-host sandbox path resolution', () => {
   const root = path.join(os.tmpdir(), 'mh-test-root');
   const sb = resolveSandbox(root);
@@ -166,6 +190,12 @@ describe('member-host sandbox path resolution', () => {
       expect(isInside(sb.root, env[k]), `${k}=${env[k]}`).toBe(true);
     }
     expect(env.PATH).toBe('/bin');
+  });
+
+  it('the orchestrator binds its own port, not the default 7523 the member user installs bind', () => {
+    const env = sandboxEnv({}, sb);
+    expect(env.APRA_FLEET_PORT).toBe(String(ORCHESTRATOR_PORT));
+    expect(ORCHESTRATOR_PORT).not.toBe(7523);
   });
 
   it('assertInside refuses a path outside the sandbox, including .. escapes', () => {

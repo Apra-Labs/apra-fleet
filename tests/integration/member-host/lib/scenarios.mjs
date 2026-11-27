@@ -6,7 +6,10 @@
 import { baselineAsset, baselineStaleness, newestBaselineTag } from '../../fresh-install/lib/baseline.mjs';
 import { QUOTE_LED_CASES } from './commands.mjs';
 
+/** The install guard's refusal (the release binary's `install`, RBS). */
 export const REFUSAL_CODE = 'E-FLEET-SE-RUNNING';
+/** update_member's structuredContent.reason when replace-full refuses under a running sprint (RFS). */
+export const REPLACE_REFUSAL_REASON = 'fleet-se-running';
 
 /**
  * The passes, in run order. `expected` is the outcome the driver must observe;
@@ -46,22 +49,34 @@ export const PASSES = Object.freeze([
     ],
   },
   {
-    id: 'RFS', title: 'replace-full with a supervisor running',
-    expected: `replace-full refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped it succeeds`,
+    // Since #872 replace-full STOPS an idle supervisor itself (and says so) and
+    // refuses only while a sprint runs (update_member isError, reason
+    // fleet-se-running). The old "refused because a supervisor runs" check was
+    // obsolete; its equivalent is the refusal under a live sprint plus the
+    // idle-supervisor stop. The sprint is a stand-in process holding a sprint
+    // lock, which is exactly what the install guard's detection counts.
+    id: 'RFS', title: 'replace-full with fleet-sprint work running',
+    expected: `with a supervisor and a sprint running, replace-full refuses (reason ${REPLACE_REFUSAL_REASON}) and makes no destructive change; with only the idle supervisor left it stops that supervisor, says so, and replaces the install with the candidate`,
     refusalKeepsState: true,
+    refusalCode: REPLACE_REFUSAL_REASON,
     steps: [
       { id: 'rfs-baseline-installed', title: 'latest release installed as a full install on the member', expect: { exit: 0 } },
-      { id: 'rfs-supervisor-started', title: 'fleet-sprint supervisor running on the member host', expect: { exit: 0 } },
-      { id: 'rfs-refused', title: `replace-full refused with ${REFUSAL_CODE}`, expect: { exit: 0, keyline: `^${REFUSAL_CODE}$` } },
+      { id: 'rfs-supervisor-started', title: 'fleet-sprint supervisor running on the member host (seen by fleet-se-check in a later session)', expect: { exit: 0 } },
+      { id: 'rfs-sprint-started', title: 'a running sprint (stand-in holding a sprint lock) seen by fleet-se-check', expect: { exit: 0 } },
+      { id: 'rfs-refused', title: `replace-full refused (isError, reason ${REPLACE_REFUSAL_REASON})`, expect: { exit: 0, keyline: `^${REPLACE_REFUSAL_REASON}$` } },
       { id: 'rfs-unchanged', title: 'binary version, data dir listing and fleet.key hash unchanged after the refusal', expect: { exit: 0, keyline: '^UNCHANGED$' } },
-      { id: 'rfs-supervisor-stopped', title: 'supervisor stopped', expect: { exit: 0 } },
-      { id: 'rfs-replace', title: 'replace-full succeeds after the supervisor is stopped', expect: { exit: 0 } },
+      { id: 'rfs-sprint-stopped', title: 'the sprint ended; the idle supervisor still runs', expect: { exit: 0 } },
+      { id: 'rfs-workflows-copied', title: 'the installed fleet-sprint runtime copied aside for RBS', expect: { exit: 0 } },
+      { id: 'rfs-replace', title: 'replace-full succeeds and reports it stopped the idle supervisor', expect: { exit: 0, keyline: '^IDLE-SUPERVISOR-STOPPED$' } },
+      { id: 'rfs-supervisor-gone', title: 'no supervisor runs after the replacement', expect: { exit: 0 } },
+      { id: 'rfs-version', title: 'member --version equals the candidate', expect: { exit: 0, keyline: '^MATCH$' } },
     ],
   },
   {
     id: 'RBS', title: 'rollback with a supervisor running',
-    expected: `the rollback's guarded reinstall (run alone, so nothing before it can destroy state) refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped the full gated rollback succeeds and restores the release version, the data dir and fleet.key`,
+    expected: `the rollback's guarded reinstall (the release binary's install, run alone, so nothing before it can destroy state) refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped the full gated rollback succeeds and restores the release version, the data dir and fleet.key`,
     refusalKeepsState: true,
+    refusalCode: REFUSAL_CODE,
     requires: 'RFS',
     steps: [
       { id: 'rbs-backup', title: 'the replace-full backup (data/, fleet.key, old binary) is found on the member', expect: { exit: 0 } },
@@ -94,7 +109,7 @@ export function planPasses(ids = PASS_IDS) {
     return {
       id: p.id, title: p.title, expected: p.expected,
       refusalWithoutDestructiveChange: p.refusalKeepsState,
-      refusalCode: p.refusalKeepsState ? REFUSAL_CODE : null,
+      refusalCode: p.refusalKeepsState ? p.refusalCode : null,
       requires: p.requires ?? null,
       steps: p.steps.map(s => s.id),
     };

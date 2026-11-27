@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  PASS_IDS, PASSES, REFUSAL_CODE, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
+  PASS_IDS, PASSES, REFUSAL_CODE, REPLACE_REFUSAL_REASON, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
 } from './integration/member-host/lib/scenarios.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,7 +16,9 @@ import { buildReport } from './integration/member-host/lib/report.mjs';
 import {
   ROLLBACK_OK, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSteps, rollbackSucceeded,
 } from './integration/member-host/lib/rollback.mjs';
-import { baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY } from './integration/member-host/lib/commands.mjs';
+import {
+  baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY, SUPERVISOR_COPY_DIR, parseFleetSe, idleSupervisorStoppedNote,
+} from './integration/member-host/lib/commands.mjs';
 
 const pins = JSON.parse(JSON.stringify({
   baselines: {
@@ -31,14 +33,25 @@ describe('member-host scenario plan', () => {
     expect(planPasses().map((p: { id: string }) => p.id)).toEqual(['Q', 'RF', 'RB', 'RFS', 'RBS']);
   });
 
-  it('RFS and RBS expect an E-FLEET-SE-RUNNING refusal with no destructive change; the others do not', () => {
+  it('RFS expects replace-full refused (reason fleet-se-running) and RBS the install guard (E-FLEET-SE-RUNNING), both with no destructive change; the others refuse nothing', () => {
     const plan = planPasses() as Array<{ id: string; refusalWithoutDestructiveChange: boolean; refusalCode: string | null }>;
+    const codes: Record<string, string | null> = { Q: null, RF: null, RB: null, RFS: 'fleet-se-running', RBS: 'E-FLEET-SE-RUNNING' };
     for (const p of plan) {
-      const refusing = p.id === 'RFS' || p.id === 'RBS';
-      expect(p.refusalWithoutDestructiveChange, p.id).toBe(refusing);
-      expect(p.refusalCode, p.id).toBe(refusing ? 'E-FLEET-SE-RUNNING' : null);
+      expect(p.refusalWithoutDestructiveChange, p.id).toBe(codes[p.id] !== null);
+      expect(p.refusalCode, p.id).toBe(codes[p.id]);
     }
     expect(REFUSAL_CODE).toBe('E-FLEET-SE-RUNNING');
+    expect(REPLACE_REFUSAL_REASON).toBe('fleet-se-running');
+  });
+
+  it('RFS refuses under a running sprint, then has replace-full stop the idle supervisor itself and checks the candidate version', () => {
+    const ids = PASSES.find((p: { id: string }) => p.id === 'RFS')!.steps.map((s: { id: string }) => s.id);
+    expect(ids).toEqual([
+      'rfs-baseline-installed', 'rfs-supervisor-started', 'rfs-sprint-started', 'rfs-refused', 'rfs-unchanged',
+      'rfs-sprint-stopped', 'rfs-workflows-copied', 'rfs-replace', 'rfs-supervisor-gone', 'rfs-version',
+    ]);
+    const replace = PASSES.find((p: { id: string }) => p.id === 'RFS')!.steps.find((s: { id: string }) => s.id === 'rfs-replace')!;
+    expect(replace.expect.keyline).toBe('^IDLE-SUPERVISOR-STOPPED$');
   });
 
   it('the refusal passes assert the unchanged snapshot, not just the error code', () => {
@@ -229,7 +242,7 @@ describe('rollback (RB / RBS)', () => {
     expect(src).not.toMatch(/full-install\.bak/);
     expect(src).toMatch(/preReplaceBy\[pass\] = pre;/);
     expect(src).toMatch(/restoreChecks\(\{ preReplace: preReplaceBy\[pass === 'RB' \? 'RF' : 'RFS'\]/);
-    const start = src.indexOf("await startSupervisor('RBS')");
+    const start = src.indexOf("await startSupervisor('RBS'");
     const probe = src.indexOf('guardedReinstallCommand(backup)', start);
     const stop = src.indexOf("await stopSupervisor('RBS')", start);
     const full = src.indexOf('rollbackCommand(backup)', start);
@@ -237,7 +250,15 @@ describe('rollback (RB / RBS)', () => {
     expect(probe).toBeGreaterThan(start);
     expect(stop).toBeGreaterThan(probe);
     expect(full).toBeGreaterThan(stop);
-    expect(src).toMatch(/rollbackSucceeded\(r\) \? 0 : 1/);
+    // The rollback's success is its real exit code (structuredContent), not the MCP isError.
+    expect(src).toMatch(/rollbackSucceeded\(\{ isError: r\.exitCode !== 0, text: r\.stdout \}\) \? 0 : 1/);
+  });
+
+  it('exit codes come from execute_command structuredContent, never from isError (a nonzero exit is not an MCP error)', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
+    expect(src).toMatch(/execOutcome\(r\)/);
+    expect(src).toMatch(/rec\(pass, `\$\{pass\.toLowerCase\(\)\}-baseline-installed`, `baseline \$\{installArgs\}`, r\.exitCode/);
+    expect(src).toMatch(/verifyEcho\(c, r\.stdout\)/);
   });
 });
 
@@ -326,24 +347,46 @@ describe('member-host baseline install and supervisor start (RFS / RBS)', () => 
     expect(src).not.toMatch(/install --workflows none`/);
   });
 
-  it('the supervisor-started step reports the missing serve.mjs path instead of a generic exit 1', () => {
-    expect(supervisorStartCommand('/m/bin/apra-fleet.exe')).toContain(`[ ! -f "${SUPERVISOR_ENTRY}" ]`);
+  const node = 'C:\\Program Files\\nodejs\\node.exe';
+  const home = 'C:\\Users\\fleetmember';
+
+  it('the supervisor starts through WMI (outside the SSH session job), from the installed tree or the RBS copy, with the member profile env', () => {
+    const installed = supervisorStartCommand({ node, home });
+    expect(installed).toContain('[ ! -f "/c/Users/fleetmember/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs" ]');
+    const ps = Buffer.from(/EncodedCommand (\S+)/.exec(installed)![1], 'base64').toString('utf16le');
+    expect(ps).toMatch(/Invoke-CimMethod -ClassName Win32_Process -MethodName Create/);
+    expect(ps).toContain('set "USERPROFILE=C:\\Users\\fleetmember"');
+    expect(ps).toContain('"C:\\Users\\fleetmember\\.apra-fleet\\workflows\\fleet-sprint\\bin\\serve.mjs"');
+    expect(supervisorStartCommand({ node, home, fromCopy: true })).toContain(`/c/Users/fleetmember/${SUPERVISOR_COPY_DIR}/fleet-sprint/bin/serve.mjs`);
+  });
+
+  it('supervisor-started needs the launch pid AND a later fleet-se-check seeing it; a missing serve.mjs is named', () => {
     const out = supervisorStartOutcome(`SUPERVISOR-ENTRY-MISSING: ${SUPERVISOR_ENTRY} does not exist on the member (x)\n`);
     expect(out.exit).toBe(1);
     expect(out.observed).toContain('workflows/fleet-sprint/bin/serve.mjs');
-    expect(supervisorStartOutcome('FLEET_SE supervisor running pid 1')).toMatchObject({ exit: 0 });
-    expect(supervisorStartOutcome('no supervisor').exit).toBe(1);
+    const seen = 'FLEET_SE_CHECK ok\nFLEET_SE supervisor pid=6 port=8787\n';
+    expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5\r\n', seen)).toMatchObject({ exit: 0 });
+    expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5', 'FLEET_SE_CHECK ok\n').exit).toBe(1); // died with the session
+    expect(supervisorStartOutcome('LAUNCHED rc=9 pid=0', seen).exit).toBe(1);
+  });
+
+  it('parses fleet-se-check and recognizes the replace-full idle-supervisor note', () => {
+    expect(parseFleetSe('FLEET_SE_CHECK ok\r\nFLEET_SE supervisor pid=10 port=8787\nFLEET_SE sprint pid=42 id=x\n'))
+      .toEqual({ ok: true, supervisor: { pid: 10, port: 8787 }, sprints: [42] });
+    expect(parseFleetSe('Error: unknown option').ok).toBe(false);
+    expect(idleSupervisorStoppedNote('...; the idle fleet-sprint supervisor (port 8787) was stopped in step 0; it was started by hand')).toBe(true);
+    expect(idleSupervisorStoppedNote('replaced the apra-fleet v0.4.5 full install')).toBe(false);
   });
 
   it.skipIf(!(process.platform === 'linux' || process.platform === 'darwin'))('on a real bash with no serve.mjs the command exits non-zero naming the path', () => {
-    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'member-host-sup-')));
+    const tmpHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'member-host-sup-')));
     try {
-      const r = spawnSync('bash', ['-c', supervisorStartCommand('/nonexistent/apra-fleet.exe')], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+      const r = spawnSync('bash', ['-c', supervisorStartCommand({ node: 'node', home: tmpHome })], { env: { ...process.env, HOME: tmpHome }, encoding: 'utf8' });
       expect(r.status).toBe(1);
       expect(r.stdout).toContain('.apra-fleet/workflows/fleet-sprint/bin/serve.mjs');
       expect(supervisorStartOutcome(r.stdout).observed).toContain('SUPERVISOR-ENTRY-MISSING');
     } finally {
-      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   });
 });
