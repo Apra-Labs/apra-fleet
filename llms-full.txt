@@ -1730,13 +1730,28 @@ this; `isMemberOutdated` still treats any version difference as outdated.
 
 ### Rollback
 
-Run `apra-fleet uninstall --force --yes` for the member install, restore the
-backed-up data directory (`<home>/.apra-fleet-data.full-install.bak` back to
-`<home>/.apra-fleet/data`, plus `fleet.key` to `<home>/.apra-fleet/fleet.key`),
-then reinstall the PREVIOUS version from the binary copy in the backup:
-`'<home>/.apra-fleet-data.full-install.bak/apra-fleet' install --llm <provider> --force`
-(`apra-fleet.exe` on Windows). If the failure came before step b, just run
-`'<home>/.apra-fleet/bin/apra-fleet' start`.
+Where the backup is depends on who did the replacement:
+
+- By hand (steps a-f above): `<home>/.apra-fleet-data.full-install.bak`, holding
+  the data directory's contents, `fleet.key` and the old binary; the old data
+  was moved to `<home>/.apra-fleet/data.replaced`.
+- By `update_member` / `register_member` with `fleet_install: "replace-full"`:
+  `<home>/.apra-fleet-replace-backup-<stamp>/` (`<stamp>` is UTC, e.g.
+  `20261127T062401Z`, and the result names the directory), holding `data/`,
+  `fleet.key` (only if the member had one), the old binary
+  (`apra-fleet` / `apra-fleet.exe`) and, on Linux, `fleet-supervisor.service`
+  if it was moved; the old data was moved to
+  `<home>/.apra-fleet/data.replaced-<stamp>`.
+
+Run `apra-fleet uninstall --force --yes` for the member install, put the old
+data back as `<home>/.apra-fleet/data` (the moved-aside copy, else the
+backup's), restore `fleet.key` to `<home>/.apra-fleet/fleet.key` if the backup
+has one, then reinstall the PREVIOUS version from the binary copy in the
+backup, e.g.
+`'<home>/.apra-fleet-replace-backup-<stamp>/apra-fleet' install --llm <provider> --force`
+(`apra-fleet.exe` on Windows). A running fleet-sprint supervisor makes that
+install refuse with `E-FLEET-SE-RUNNING`: stop it first. If the failure came
+before the uninstall, just run `'<home>/.apra-fleet/bin/apra-fleet' start`.
 
 ### Evidence
 
