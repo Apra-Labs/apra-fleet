@@ -18,6 +18,7 @@ import {
 } from './integration/member-host/lib/rollback.mjs';
 import {
   baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY, SUPERVISOR_COPY_DIR, parseFleetSe, idleSupervisorStoppedNote,
+  sprintStopCommand, serviceDiagCommand, cimProbeCommand, diagLine,
 } from './integration/member-host/lib/commands.mjs';
 
 const pins = JSON.parse(JSON.stringify({
@@ -47,8 +48,8 @@ describe('member-host scenario plan', () => {
   it('RFS refuses under a running sprint, then has replace-full stop the idle supervisor itself and checks the candidate version', () => {
     const ids = PASSES.find((p: { id: string }) => p.id === 'RFS')!.steps.map((s: { id: string }) => s.id);
     expect(ids).toEqual([
-      'rfs-baseline-installed', 'rfs-supervisor-started', 'rfs-sprint-started', 'rfs-refused', 'rfs-unchanged',
-      'rfs-sprint-stopped', 'rfs-workflows-copied', 'rfs-replace', 'rfs-supervisor-gone', 'rfs-version',
+      'rfs-baseline-installed', 'rfs-workflows-copied', 'rfs-supervisor-started', 'rfs-sprint-started', 'rfs-refused',
+      'rfs-unchanged', 'rfs-sprint-stopped', 'rfs-replace', 'rfs-supervisor-gone', 'rfs-version',
     ]);
     const replace = PASSES.find((p: { id: string }) => p.id === 'RFS')!.steps.find((s: { id: string }) => s.id === 'rfs-replace')!;
     expect(replace.expect.keyline).toBe('^IDLE-SUPERVISOR-STOPPED$');
@@ -375,6 +376,32 @@ describe('member-host baseline install and supervisor start (RFS / RBS)', () => 
     // A refused PowerShell call reports the PowerShell message line, not its CategoryInfo tail.
     const denied = 'Invoke-CimMethod : Access denied\n+ CategoryInfo : PermissionDenied\n+ FullyQualifiedErrorId : HRESULT 0x80041003\n';
     expect(supervisorStartOutcome(denied).observed).toBe('Invoke-CimMethod : Access denied');
+  });
+
+  const decodePs = (cmd: string) => Buffer.from(/EncodedCommand (\S+)/.exec(cmd)![1], 'base64').toString('utf16le');
+
+  it('stopping the stand-in sprint silences PowerShell progress (no CLIXML on stderr)', () => {
+    expect(decodePs(sprintStopCommand(42))).toMatch(/^\$ProgressPreference = 'SilentlyContinue'; Stop-Process -Id 42 /);
+  });
+
+  it('diagnostics: service state via PowerShell (no MSYS path mangling) and the guard\'s own CIM probe', () => {
+    const diag = decodePs(serviceDiagCommand());
+    expect(diag).toContain('schtasks.exe /query /tn ApraFleet /v /fo LIST');
+    expect(diag).toContain("reg.exe query 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' /v ApraFleet");
+    expect(diag).toContain("-split '\\r?\\n'");
+    const cim = decodePs(cimProbeCommand(7680));
+    expect(cim).toContain('Get-CimInstance Win32_Process -Filter "ProcessId=7680" -ErrorAction Stop');
+    expect(cim).toContain("'CIM-ERR ' + $_.Exception.Message");
+    expect(() => cimProbeCommand('7; calc')).toThrow(/bad pid/);
+    expect(diagLine('#< CLIXML\r\nTASK a\r\n<Objs x>\r\n\r\nRUNKEY b')).toBe('TASK a | RUNKEY b');
+  });
+
+  it('a refusal attempt whose precondition failed is recorded FAIL and never run', () => {
+    const src = runSrc();
+    expect(src).toMatch(/if \(sprintSeen\) \{[\s\S]*?await replaceFull\(\)[\s\S]*?\} else \{\s*skipped\('RFS', 'rfs-refused'/);
+    expect(src).toMatch(/if \(await startSupervisor\('RBS', true\)\) \{[\s\S]*?await exec\(probe, 300\)[\s\S]*?\} else \{\s*skipped\('RBS', 'rbs-refused'/);
+    // The release's workflows/ is copied right after its install, before any replace-full can remove it.
+    expect(src.indexOf("'rfs-workflows-copied'")).toBeLessThan(src.indexOf("await startSupervisor('RFS')"));
   });
 
   it('parses fleet-se-check and recognizes the replace-full idle-supervisor note', () => {

@@ -28,7 +28,7 @@ import {
   QUOTE_LED_CASES, verifyEcho, memberWorkFolder, baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome,
   CHECK_BIN, NODE_PATH_COMMAND, SUPERVISOR_COPY_DIR, detachedLaunchCommand, launchedPid, standInSprintCommandLine,
   sprintLockCommand, sprintStopCommand, fleetSeCheckCommand, waitSupervisorUpCommand, supervisorStopCommand,
-  parseFleetSe, idleSupervisorStoppedNote, launchFailureLine,
+  parseFleetSe, idleSupervisorStoppedNote, launchFailureLine, serviceDiagCommand, cimProbeCommand, diagLine,
 } from './lib/commands.mjs';
 import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
@@ -197,7 +197,7 @@ async function realRun(o) {
   };
   const startSupervisor = async (pass, fromCopy = false) => {
     const lc = pass.toLowerCase();
-    if (!memberNode) { rec(pass, `${lc}-supervisor-started`, 'start fleet-sprint supervisor', 1, '', 'node not found on the member'); return; }
+    if (!memberNode) { rec(pass, `${lc}-supervisor-started`, 'start fleet-sprint supervisor', 1, '', 'node not found on the member'); return false; }
     const launch = await exec(supervisorStartCommand({ node: memberNode, home: info.home, fromCopy }), 60);
     // Checked in a LATER session: the supervisor must outlive the launching one.
     const check = launchedPid(launch.stdout) ? await exec(waitSupervisorUpCommand(), 180) : { stdout: '' };
@@ -207,6 +207,7 @@ async function realRun(o) {
       o2.observed += ` | supervisor.log: ${tail(logTail.stdout, 150)}`;
     }
     rec(pass, `${lc}-supervisor-started`, `start fleet-sprint supervisor${fromCopy ? ` from ~/${SUPERVISOR_COPY_DIR}` : ''}`, o2.exit, '', o2.observed);
+    return o2.exit === 0;
   };
   const stopSupervisor = async pass => {
     const r = await exec(supervisorStopCommand(), 120);
@@ -214,6 +215,17 @@ async function realRun(o) {
     rec(pass, `${pass.toLowerCase()}-supervisor-stopped`, 'POST /api/shutdown, wait for /api/health to stop answering', found.ok && !found.supervisor ? 0 : 1, '', tail(out(r)));
   };
   const replaceFull = () => call('update_member', { member_id: memberId, fleet_install: 'replace-full' });
+  // A step whose precondition failed is recorded FAIL and NOT run: running it
+  // anyway (a replace-full or reinstall that was meant to be refused) changes
+  // the member and wrecks every later step's baseline.
+  const skipped = (pass, id, cmd, precondition) => rec(pass, id, cmd, 1, 'SKIPPED', `not run: precondition ${precondition} failed`);
+  // Report-note diagnostics (never a verdict): why the member's HTTP service
+  // is or is not answering.
+  const serviceDiag = async label => {
+    const d = await exec(serviceDiagCommand(), 60);
+    const st = await exec(`"${MH}/bin/apra-fleet.exe" status 2>&1 | head -20; ls -1 ${MH}/data/*.log ${MH}/data/logs 2>&1 | head -5`, 60);
+    notes.push(`service diag (${label}): ${diagLine(d.stdout)} || status: ${diagLine(out(st), 400)}`);
+  };
   const unchangedStep = (pass, id, before, after) => {
     const cmp = compareSnapshots(before, after);
     rec(pass, `${id}-unchanged`, 'snapshot compare', 0, cmp.unchanged ? 'UNCHANGED' : 'CHANGED', cmp.diffs.join('; '));
@@ -248,6 +260,7 @@ async function realRun(o) {
       } else if (pass === 'RF') {
         if (!baseline.tag || !baseline.asset) throw new Error('no usable release baseline');
         await installBaselineOnMember(pass);
+        await serviceDiag('RF, after the release install');
         const pre = await snapshot();
         preReplaceBy[pass] = pre;
         const r = await replaceFull();
@@ -258,37 +271,52 @@ async function realRun(o) {
         const t = await exec(`"${MH}/bin/apra-fleet.exe" call --member ${memberId} --list-tools`);
         const ok = t.exitCode === 0 && /kb_/.test(t.stdout) && /code_/.test(t.stdout) && !/execute_|register_|credential_/.test(t.stdout);
         rec('RF', 'rf-tools', 'call --list-tools', t.exitCode, ok ? 'TOOLS-OK' : 'TOOLS-WRONG', tail(out(t)));
+        if (!ok) await serviceDiag('RF, after the candidate member install');
       } else if (pass === 'RFS') {
         if (!baseline.tag || !baseline.asset) throw new Error('no usable release baseline');
         await installBaselineOnMember(pass);
+        // Copy the release's fleet-sprint runtime aside FIRST, while the full
+        // install is certainly there: RBS starts its supervisor from the copy.
+        const cp = await exec(`rm -rf "$HOME/${SUPERVISOR_COPY_DIR}" && cp -R "${MH}/workflows" "$HOME/${SUPERVISOR_COPY_DIR}" && test -f "$HOME/${SUPERVISOR_COPY_DIR}/fleet-sprint/bin/serve.mjs" && echo copied`, 300);
+        rec('RFS', 'rfs-workflows-copied', `copy ${MH}/workflows to ~/${SUPERVISOR_COPY_DIR}`, /copied/.test(cp.stdout) ? cp.exitCode : 1, '', tail(out(cp)));
         await startSupervisor('RFS');
         // A running sprint: a stand-in process holding a sprint lock, which is
         // what the install guard's detection counts (no LLM needed).
         let sprintPid = null;
+        let sprintSeen = false;
         if (memberNode) {
           const l = await exec(detachedLaunchCommand(standInSprintCommandLine({ node: memberNode }), info.home), 60);
           sprintPid = launchedPid(l.stdout);
           if (sprintPid) {
             const w = await exec(sprintLockCommand(sprintPid), 60);
             const f = parseFleetSe(w.stdout);
-            rec('RFS', 'rfs-sprint-started', 'stand-in sprint + lock, fleet-se-check', f.sprints.includes(sprintPid) ? 0 : 1, '', tail(out(w)));
+            sprintSeen = f.sprints.includes(sprintPid);
+            rec('RFS', 'rfs-sprint-started', 'stand-in sprint + lock, fleet-se-check', sprintSeen ? 0 : 1, '', tail(out(w)));
+            if (!sprintSeen) {
+              // What the guard's command-line probe (Get-CimInstance) gets in this session.
+              const c = await exec(cimProbeCommand(sprintPid), 60);
+              notes.push(`RFS: install-guard command-line probe for the stand-in sprint pid ${sprintPid}: ${diagLine(c.stdout)}`);
+            }
           } else {
             rec('RFS', 'rfs-sprint-started', 'stand-in sprint launch', 1, '', launchFailureLine(out(l)));
           }
         }
-        // Taken with everything running, right before the refused attempt.
-        const before = await snapshot();
-        const refused = await replaceFull();
-        const reason = refused.isError ? String(refused.structured?.reason ?? 'NO-REASON') : 'NOT-REFUSED';
-        rec('RFS', 'rfs-refused', 'update_member replace-full under a running sprint', 0, reason, refused.text.slice(0, 300));
-        unchangedStep('RFS', 'rfs', before, await snapshot());
+        if (sprintSeen) {
+          // Taken with everything running, right before the refused attempt.
+          const before = await snapshot();
+          const refused = await replaceFull();
+          const reason = refused.isError ? String(refused.structured?.reason ?? 'NO-REASON') : 'NOT-REFUSED';
+          rec('RFS', 'rfs-refused', 'update_member replace-full under a running sprint', 0, reason, refused.text.slice(0, 300));
+          unchangedStep('RFS', 'rfs', before, await snapshot());
+        } else {
+          skipped('RFS', 'rfs-refused', 'update_member replace-full under a running sprint', 'rfs-sprint-started');
+          skipped('RFS', 'rfs-unchanged', 'snapshot compare', 'rfs-sprint-started');
+        }
         if (sprintPid) {
           const s = await exec(sprintStopCommand(sprintPid), 60);
           const f = parseFleetSe(s.stdout);
           rec('RFS', 'rfs-sprint-stopped', 'end the stand-in sprint', f.ok && f.sprints.length === 0 && f.supervisor ? 0 : 1, '', tail(out(s)));
         }
-        const cp = await exec(`rm -rf "$HOME/${SUPERVISOR_COPY_DIR}" && cp -R "${MH}/workflows" "$HOME/${SUPERVISOR_COPY_DIR}" && test -f "$HOME/${SUPERVISOR_COPY_DIR}/fleet-sprint/bin/serve.mjs" && echo copied`, 300);
-        rec('RFS', 'rfs-workflows-copied', `copy ${MH}/workflows to ~/${SUPERVISOR_COPY_DIR}`, /copied/.test(cp.stdout) ? cp.exitCode : 1, '', tail(out(cp)));
         const pre = await snapshot();
         preReplaceBy[pass] = pre;
         const r = await replaceFull();
@@ -305,12 +333,16 @@ async function realRun(o) {
           // full rollback are not guarded and would destroy state. The
           // supervisor runs from RFS's copy of the release's fleet-sprint (the
           // member install has none).
-          await startSupervisor('RBS', true);
-          const pre = await snapshot();
           const probe = guardedReinstallCommand(backup);
-          const refused = await exec(probe, 300);
-          rec('RBS', 'rbs-refused', probe, 0, out(refused).includes(REFUSAL_CODE) ? REFUSAL_CODE : 'NOT-REFUSED', tail(out(refused), 300));
-          unchangedStep('RBS', 'rbs', pre, await snapshot());
+          if (await startSupervisor('RBS', true)) {
+            const pre = await snapshot();
+            const refused = await exec(probe, 300);
+            rec('RBS', 'rbs-refused', probe, 0, out(refused).includes(REFUSAL_CODE) ? REFUSAL_CODE : 'NOT-REFUSED', tail(out(refused), 300));
+            unchangedStep('RBS', 'rbs', pre, await snapshot());
+          } else {
+            skipped('RBS', 'rbs-refused', probe, 'rbs-supervisor-started');
+            skipped('RBS', 'rbs-unchanged', 'snapshot compare', 'rbs-supervisor-started');
+          }
           await stopSupervisor('RBS');
         }
         const cmd = rollbackCommand(backup);

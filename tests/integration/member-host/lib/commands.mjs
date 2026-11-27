@@ -101,8 +101,8 @@ export function powershellEncoded(script) {
 // CREATE_BREAKAWAY_FROM_JOB (out of the sshd session's job object, which may
 // be closed -- killing its processes -- when the session ends), then, if the
 // job forbids breakaway, without it. Prints `LAUNCHED rc=<win32 error> pid=<pid>
-// breakaway=yes|no`. (WMI Win32_Process.Create, the first attempt, is refused
-// with Access denied for a key-auth SSH user.)
+// breakaway=yes|no`. No WMI: Win32_Process.Create is refused with Access
+// denied for a key-auth SSH user.
 const LAUNCHER_CS = [
   'using System; using System.Runtime.InteropServices; using System.Text;',
   'public static class MhLaunch {',
@@ -232,7 +232,7 @@ export function sprintLockCommand(pid) {
 /** Ends the stand-in and removes its lock, then runs fleetSeCheckCommand. */
 export function sprintStopCommand(pid) {
   const n = checkPid(pid);
-  return `${powershellEncoded(`Stop-Process -Id ${n} -Force -ErrorAction SilentlyContinue; exit 0`)}; ` +
+  return `${powershellEncoded(`$ProgressPreference = 'SilentlyContinue'; Stop-Process -Id ${n} -Force -ErrorAction SilentlyContinue; exit 0`)}; ` +
     `node -e "require('fs').rmSync(require('path').join(require('os').tmpdir(),'apra-fleet-sprint-locks','${SPRINT_LOCK_NAME}'),{force:true})" && ${fleetSeCheckCommand()}`;
 }
 
@@ -267,4 +267,51 @@ export function parseFleetSe(stdout) {
 /** Whether replace-full's result says it stopped the idle supervisor (src/services/member-fleet-install.ts). */
 export function idleSupervisorStoppedNote(text, port = SUPERVISOR_PORT) {
   return String(text ?? '').includes(`the idle fleet-sprint supervisor (port ${port}) was stopped in step 0`);
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics (report notes only, never a step verdict).
+// ---------------------------------------------------------------------------
+
+/** The per-user task name the product registers (src/services/service-manager/types.ts WINDOWS_TASK_NAME). */
+export const SERVICE_TASK_NAME = 'ApraFleet';
+
+/**
+ * Why the member's HTTP service is (not) running: the scheduled task's state,
+ * last result and logon mode, the HKCU Run fallback entry and the logged-on
+ * sessions on the host. PowerShell, so Git Bash cannot path-mangle the
+ * `/query` style arguments.
+ */
+export function serviceDiagCommand() {
+  return powershellEncoded([
+    "$ProgressPreference = 'SilentlyContinue'",
+    `$t = schtasks.exe /query /tn ${SERVICE_TASK_NAME} /v /fo LIST 2>&1 | ForEach-Object { "$_" } | Out-String`,
+    "$keep = $t -split '\\r?\\n' | Where-Object { $_ -match '^(Status|Last Run Time|Last Result|Logon Mode|Run As User|Scheduled Task State|ERROR)' } | ForEach-Object { $_ -replace '\\s{2,}', ' ' }",
+    "'TASK ' + ($keep -join ' ; ')",
+    `$r = reg.exe query 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' /v ${SERVICE_TASK_NAME} 2>&1 | ForEach-Object { "$_" } | Out-String`,
+    "'RUNKEY ' + (($r -split '\\r?\\n' | Where-Object { $_.Trim() }) -join ' ; ')",
+    "$q = query.exe user 2>&1 | Out-String",
+    "'SESSIONS ' + (($q -split '\\r?\\n' | Where-Object { $_.Trim() }) -join ' ; ')",
+    'exit 0',
+  ].join('; '));
+}
+
+/**
+ * What the install guard's command-line probe (src/utils/process-utils.ts
+ * processCommandLine: Get-CimInstance Win32_Process) gets for `pid` in this
+ * SSH session: `CIM-OK <command line>`, `CIM-EMPTY` or `CIM-ERR <message>`.
+ */
+export function cimProbeCommand(pid) {
+  const n = checkPid(pid);
+  return powershellEncoded(
+    "$ProgressPreference = 'SilentlyContinue'; " +
+    `try { $c = (Get-CimInstance Win32_Process -Filter "ProcessId=${n}" -ErrorAction Stop).CommandLine; ` +
+    "if ($c) { 'CIM-OK ' + $c } else { 'CIM-EMPTY no command line returned' } } catch { 'CIM-ERR ' + $_.Exception.Message }; exit 0",
+  );
+}
+
+/** One report-note line from a diagnostic's output (single line, CLIXML noise dropped, bounded). */
+export function diagLine(text, max = 600) {
+  return String(text ?? '').replace(/\r/g, '').split('\n').map(l => l.trim())
+    .filter(l => l && !l.startsWith('#< CLIXML') && !l.startsWith('<Objs')).join(' | ').slice(0, max) || '(no output)';
 }

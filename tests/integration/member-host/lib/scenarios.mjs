@@ -61,12 +61,12 @@ export const PASSES = Object.freeze([
     refusalCode: REPLACE_REFUSAL_REASON,
     steps: [
       { id: 'rfs-baseline-installed', title: 'latest release installed as a full install on the member', expect: { exit: 0 } },
+      { id: 'rfs-workflows-copied', title: 'the installed fleet-sprint runtime copied aside for RBS', expect: { exit: 0 } },
       { id: 'rfs-supervisor-started', title: 'fleet-sprint supervisor running on the member host (seen by fleet-se-check in a later session)', expect: { exit: 0 } },
       { id: 'rfs-sprint-started', title: 'a running sprint (stand-in holding a sprint lock) seen by fleet-se-check', expect: { exit: 0 } },
       { id: 'rfs-refused', title: `replace-full refused (isError, reason ${REPLACE_REFUSAL_REASON})`, expect: { exit: 0, keyline: `^${REPLACE_REFUSAL_REASON}$` } },
       { id: 'rfs-unchanged', title: 'binary version, data dir listing and fleet.key hash unchanged after the refusal', expect: { exit: 0, keyline: '^UNCHANGED$' } },
       { id: 'rfs-sprint-stopped', title: 'the sprint ended; the idle supervisor still runs', expect: { exit: 0 } },
-      { id: 'rfs-workflows-copied', title: 'the installed fleet-sprint runtime copied aside for RBS', expect: { exit: 0 } },
       { id: 'rfs-replace', title: 'replace-full succeeds and reports it stopped the idle supervisor', expect: { exit: 0, keyline: '^IDLE-SUPERVISOR-STOPPED$' } },
       { id: 'rfs-supervisor-gone', title: 'no supervisor runs after the replacement', expect: { exit: 0 } },
       { id: 'rfs-version', title: 'member --version equals the candidate', expect: { exit: 0, keyline: '^MATCH$' } },

@@ -44,8 +44,15 @@ How the driver talks to the member:
   rollback reinstalls with `--llm claude`, the member's provider, as the
   product's own rollback steps do. The candidate's own `fleet-se-check`,
   copied to the member home, detects them (the release binary has no such verb).
-- RFS copies the release's `workflows/` aside before its replace-full; RBS
+- RFS copies the release's `workflows/` aside right after installing it; RBS
   starts its supervisor from that copy (a member install has no fleet-sprint).
+- A refusal attempt runs only when its precondition step passed (RFS: the
+  sprint was detected; RBS: the supervisor is up). Otherwise it is recorded
+  FAIL (`SKIPPED`) and not run, so a non-refusal cannot replace or reinstall
+  under the later steps.
+- Report notes carry diagnostics, never verdicts: the member's ApraFleet task
+  state, HKCU Run entry and logon sessions, and what the install guard's
+  `Get-CimInstance` command-line probe returns in the SSH session.
 
 The rollback (`lib/rollback.mjs`) restores from the newest
 `$HOME/.apra-fleet-replace-backup-*` that replace-full made (data/, fleet.key,
