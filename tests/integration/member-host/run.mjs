@@ -26,13 +26,13 @@ import { fileURLToPath } from 'node:url';
 import { DISPOSABLE_FLAG, disposableRefusal } from './lib/opt-in.mjs';
 import {
   QUOTE_LED_CASES, verifyEcho, memberWorkFolder, baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome,
-  CHECK_BIN, NODE_PATH_COMMAND, SUPERVISOR_COPY_DIR, wmiLaunchCommand, launchedPid, standInSprintCommandLine,
+  CHECK_BIN, NODE_PATH_COMMAND, SUPERVISOR_COPY_DIR, detachedLaunchCommand, launchedPid, standInSprintCommandLine,
   sprintLockCommand, sprintStopCommand, fleetSeCheckCommand, waitSupervisorUpCommand, supervisorStopCommand,
   parseFleetSe, idleSupervisorStoppedNote, launchFailureLine,
 } from './lib/commands.mjs';
 import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
-import { guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSucceeded } from './lib/rollback.mjs';
+import { MEMBER_PROVIDER, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSucceeded } from './lib/rollback.mjs';
 import { toolResult, execOutcome } from './lib/mcp-result.mjs';
 import { buildReport } from './lib/report.mjs';
 import { resolveLatestRelease, releaseAssetUrl } from '../fresh-install/lib/baseline.mjs';
@@ -109,12 +109,20 @@ async function realRun(o) {
     const r = spawnSync(cmd, args, { encoding: 'utf8', env, cwd: sb.root, timeout: opts.timeoutMs ?? 600000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
     return { code: r.error ? `ERR ${r.error.message}` : r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
-  const inst = run(cand, ['install', '--workflows', 'none']);
+  // --transport stdio: the driver talks to the orchestrator over stdio, so it
+  // needs no service. An http install registers a per-user service that
+  // starts in the runner user's REAL environment (not this sandbox's
+  // APRA_FLEET_PORT / data dir) and binds the default 7523, which the
+  // member -- another user on this host -- then cannot use.
+  const inst = run(cand, ['install', '--workflows', 'none', '--transport', 'stdio']);
   notes.push(`candidate install exit ${inst.code}`);
   if (inst.code !== 0) throw new Error(`the candidate install on the orchestrator failed (exit ${inst.code}): ${tail(inst.out, 400)}`);
   const orchBin = path.join(sb.home, '.apra-fleet', 'bin', 'apra-fleet.exe');
   const candVersion = (/v\d+\.\d+\.\d+_[0-9a-f]+/.exec(run(cand, ['--version']).out) ?? [null])[0];
   notes.push(`candidate version: ${candVersion ?? 'unresolved'}`);
+  // Who listens on the default port before any member install (should be nobody).
+  const listen = run('netstat', ['-ano', '-p', 'TCP']);
+  notes.push(`listeners on :7523 before the passes: ${String(listen.out).split(/\r?\n/).filter(l => /:7523\s/.test(l) && /LISTENING/.test(l)).map(l => l.trim()).join(' ; ') || 'none'}`);
 
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -130,7 +138,7 @@ async function realRun(o) {
   // first; replace-full then replaces it.
   const reg = await call('register_member', {
     friendly_name: 'member-host', member_type: 'remote', host: '127.0.0.1', port: info.port ?? 22,
-    username: info.user, auth_type: 'key', key_path: info.keyPath, work_folder: memberWorkFolder(info), llm_provider: 'claude',
+    username: info.user, auth_type: 'key', key_path: info.keyPath, work_folder: memberWorkFolder(info), llm_provider: MEMBER_PROVIDER,
     fleet_install: 'skip', vcs_provider: 'none',
   });
   const idMatch = /([0-9a-f]{8}-[0-9a-f-]{27})/i.exec(reg.text);
@@ -258,7 +266,7 @@ async function realRun(o) {
         // what the install guard's detection counts (no LLM needed).
         let sprintPid = null;
         if (memberNode) {
-          const l = await exec(wmiLaunchCommand(standInSprintCommandLine({ node: memberNode }), info.home), 60);
+          const l = await exec(detachedLaunchCommand(standInSprintCommandLine({ node: memberNode }), info.home), 60);
           sprintPid = launchedPid(l.stdout);
           if (sprintPid) {
             const w = await exec(sprintLockCommand(sprintPid), 60);

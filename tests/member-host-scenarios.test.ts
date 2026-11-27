@@ -191,7 +191,7 @@ describe('rollback (RB / RBS)', () => {
 
   it('the RBS refusal attempt is the guarded reinstall ALONE: no uninstall, no data removal or restore', () => {
     const probe = guardedReinstallCommand(B);
-    expect(probe).toBe(`chmod +x '${B}/apra-fleet.exe' && '${B}/apra-fleet.exe' install --llm none --force`);
+    expect(probe).toBe(`chmod +x '${B}/apra-fleet.exe' && '${B}/apra-fleet.exe' install --llm claude --force`);
     expect(probe).not.toMatch(/uninstall|rm -rf|cp /);
   });
 
@@ -294,7 +294,7 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
       expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
       expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['agents.json']);
       expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('release-key');
-      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm none --force\n');
+      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm claude --force\n');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -308,7 +308,7 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
       expect(r.status, r.stderr).toBe(0);
       expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
       expect(fs.existsSync(path.join(mh, 'fleet.key'))).toBe(false);
-      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm none --force\n');
+      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm claude --force\n');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -350,11 +350,13 @@ describe('member-host baseline install and supervisor start (RFS / RBS)', () => 
   const node = 'C:\\Program Files\\nodejs\\node.exe';
   const home = 'C:\\Users\\fleetmember';
 
-  it('the supervisor starts through WMI (outside the SSH session job), from the installed tree or the RBS copy, with the member profile env', () => {
+  it('the supervisor starts detached (job breakaway first), from the installed tree or the RBS copy, with the member profile env', () => {
     const installed = supervisorStartCommand({ node, home });
     expect(installed).toContain('[ ! -f "/c/Users/fleetmember/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs" ]');
     const ps = Buffer.from(/EncodedCommand (\S+)/.exec(installed)![1], 'base64').toString('utf16le');
-    expect(ps).toMatch(/Invoke-CimMethod -ClassName Win32_Process -MethodName Create/);
+    expect(ps).toMatch(/Add-Type -TypeDefinition/);
+    expect(ps).toContain('0x01000000u, 0u'); // CREATE_BREAKAWAY_FROM_JOB, then without it
+    expect(ps).not.toMatch(/Invoke-CimMethod/); // refused with Access denied for a key-auth SSH user
     expect(ps).toContain('set "USERPROFILE=C:\\Users\\fleetmember"');
     expect(ps).toContain('"C:\\Users\\fleetmember\\.apra-fleet\\workflows\\fleet-sprint\\bin\\serve.mjs"');
     expect(supervisorStartCommand({ node, home, fromCopy: true })).toContain(`/c/Users/fleetmember/${SUPERVISOR_COPY_DIR}/fleet-sprint/bin/serve.mjs`);
@@ -367,8 +369,10 @@ describe('member-host baseline install and supervisor start (RFS / RBS)', () => 
     const seen = 'FLEET_SE_CHECK ok\nFLEET_SE supervisor pid=6 port=8787\n';
     expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5\r\n', seen)).toMatchObject({ exit: 0 });
     expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5', 'FLEET_SE_CHECK ok\n').exit).toBe(1); // died with the session
-    expect(supervisorStartOutcome('LAUNCHED rc=9 pid=0', seen).exit).toBe(1);
-    // A refused WMI call reports the PowerShell message line, not its CategoryInfo tail.
+    expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5 breakaway=no\n', seen)).toMatchObject({ exit: 0 });
+    expect(supervisorStartOutcome('LAUNCHED rc=5 pid=0', seen).exit).toBe(1);
+    expect(supervisorStartOutcome('LAUNCHED rc= pid=', seen).exit).toBe(1);
+    // A refused PowerShell call reports the PowerShell message line, not its CategoryInfo tail.
     const denied = 'Invoke-CimMethod : Access denied\n+ CategoryInfo : PermissionDenied\n+ FullyQualifiedErrorId : HRESULT 0x80041003\n';
     expect(supervisorStartOutcome(denied).observed).toBe('Invoke-CimMethod : Access denied');
   });

@@ -33,11 +33,16 @@ How the driver talks to the member:
   `<apra-fleet-display>` items are dropped (`lib/mcp-result.mjs`).
 - The member is registered as a claude member with fleet_install skip: only
   claude / opencode members get a member install.
-- The orchestrator runs on its own port (`lib/sandbox.mjs` ORCHESTRATOR_PORT):
-  the member is another user on the same host, and its installs bind 7523.
+- The orchestrator is installed `--transport stdio` (no service) with its own
+  APRA_FLEET_PORT: an http install's service would start in the runner user's
+  real environment and hold 7523, which the member (another user on the same
+  host) needs.
 - The supervisor and the stand-in sprint (a node process holding a sprint
-  lock, which the install guard counts) start through WMI, outside the SSH
-  session's job, so they outlive it. The candidate's own `fleet-se-check`,
+  lock, which the install guard counts) start detached via CreateProcess,
+  breaking away from the SSH session's job when the job allows it (WMI is
+  refused for a key-auth SSH user); a later session must still see them. The
+  rollback reinstalls with `--llm claude`, the member's provider, as the
+  product's own rollback steps do. The candidate's own `fleet-se-check`,
   copied to the member home, detects them (the release binary has no such verb).
 - RFS copies the release's `workflows/` aside before its replace-full; RBS
   starts its supervisor from that copy (a member install has no fleet-sprint).

@@ -97,27 +97,50 @@ export function powershellEncoded(script) {
   return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`;
 }
 
+// CreateProcessW with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, first with
+// CREATE_BREAKAWAY_FROM_JOB (out of the sshd session's job object, which may
+// be closed -- killing its processes -- when the session ends), then, if the
+// job forbids breakaway, without it. Prints `LAUNCHED rc=<win32 error> pid=<pid>
+// breakaway=yes|no`. (WMI Win32_Process.Create, the first attempt, is refused
+// with Access denied for a key-auth SSH user.)
+const LAUNCHER_CS = [
+  'using System; using System.Runtime.InteropServices; using System.Text;',
+  'public static class MhLaunch {',
+  '  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct SI { public int cb; public string r; public string d; public string t; public int x, y, xs, ys, xc, yc, fa, f; public short sw, r2; public IntPtr r3, i, o, e; }',
+  '  [StructLayout(LayoutKind.Sequential)] public struct PI { public IntPtr hp, ht; public int pid, tid; }',
+  '  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inh, uint flags, IntPtr env, string cwd, ref SI si, out PI pi);',
+  '  public static string Run(string cmd, string cwd) {',
+  '    int last = 0;',
+  '    foreach (uint extra in new uint[] { 0x01000000u, 0u }) {',
+  '      SI si = new SI(); si.cb = Marshal.SizeOf(typeof(SI)); PI pi;',
+  '      if (CreateProcessW(null, new StringBuilder(cmd), IntPtr.Zero, IntPtr.Zero, false, 0x00000008u | 0x00000200u | extra, IntPtr.Zero, cwd, ref si, out pi))',
+  '        return "LAUNCHED rc=0 pid=" + pi.pid + " breakaway=" + (extra != 0 ? "yes" : "no");',
+  '      last = Marshal.GetLastWin32Error();',
+  '    }',
+  '    return "LAUNCHED rc=" + last + " pid=0";',
+  '  }',
+  '}',
+].join('\n');
+
 /**
- * Starts `commandLine` through WMI (Win32_Process.Create) and prints
- * `LAUNCHED rc=<n> pid=<pid>`. Windows sshd keeps a session's processes in a
- * job object that is closed with the session, so a background process started
- * from one execute_command does not reliably outlive it; a WMI-created process
- * is outside that job and survives into the next execute_command.
+ * Starts `commandLine` detached from the SSH session (see LAUNCHER_CS) and
+ * prints `LAUNCHED rc=<n> pid=<pid> breakaway=yes|no`. Whether it outlived
+ * the session is checked by the caller in a LATER execute_command.
  */
-export function wmiLaunchCommand(commandLine, cwd) {
+export function detachedLaunchCommand(commandLine, cwd) {
   return powershellEncoded(
-    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${psq(commandLine)}; CurrentDirectory = ${psq(cwd)} }; ` +
-    `Write-Output ('LAUNCHED rc=' + $r.ReturnValue + ' pid=' + $r.ProcessId); if ($r.ReturnValue -ne 0) { exit 1 }`,
+    `$ProgressPreference = 'SilentlyContinue'; Add-Type -TypeDefinition ${psq(LAUNCHER_CS)}; ` +
+    `$line = [MhLaunch]::Run(${psq(commandLine)}, ${psq(cwd)}); Write-Output $line; if ($line -notmatch '^LAUNCHED rc=0 ') { exit 1 }`,
   );
 }
 
-/** pid of a wmiLaunchCommand run, or null when it did not start. */
+/** pid of a detachedLaunchCommand run, or null when it did not start. */
 export function launchedPid(stdout) {
-  const m = /^LAUNCHED rc=(\d+) pid=(\d+)\s*$/m.exec(String(stdout ?? '').replace(/\r/g, ''));
-  return m && m[1] === '0' ? Number(m[2]) : null;
+  const m = /^LAUNCHED rc=(\d+) pid=(\d+)(?: breakaway=(?:yes|no))?\s*$/m.exec(String(stdout ?? '').replace(/\r/g, ''));
+  return m && m[1] === '0' && m[2] !== '0' ? Number(m[2]) : null;
 }
 
-/** Prints the Windows path of node on the member (WMI needs a full path). */
+/** Prints the Windows path of node on the member (the launcher needs a full path). */
 export const NODE_PATH_COMMAND = 'cygpath -w "$(command -v node)"';
 
 /** Windows path of serve.mjs: the installed tree, or RFS's copy of it. */
@@ -128,9 +151,9 @@ export function supervisorServePath(home, fromCopy) {
 }
 
 /**
- * The supervisor's command line for wmiLaunchCommand. The member user's
- * profile variables are set explicitly (a WMI-created process does not get
- * the SSH session's environment), so it uses the member's own data dirs.
+ * The supervisor's command line for detachedLaunchCommand. The member user's
+ * profile variables are set explicitly (not left to whatever environment the
+ * launch inherits), so it uses the member's own data dirs.
  * Output goes to <home>\supervisor.log.
  */
 export function supervisorCommandLine({ node, serve, home }) {
@@ -152,7 +175,7 @@ export function supervisorStartCommand({ node, home, fromCopy = false }) {
   const serve = supervisorServePath(home, fromCopy);
   const bashServe = gitBashPath(serve);
   return `if [ ! -f "${bashServe}" ]; then echo "${SUPERVISOR_MISSING_MARKER}: ${bashServe} does not exist on the member (the install shipped no fleet-sprint runtime; install without --workflows none)"; exit 1; fi; ` +
-    wmiLaunchCommand(supervisorCommandLine({ node, serve, home }), home);
+    detachedLaunchCommand(supervisorCommandLine({ node, serve, home }), home);
 }
 
 /**
@@ -174,9 +197,9 @@ export function supervisorStartOutcome(launchText, checkText = '') {
 }
 
 /**
- * Why a wmiLaunchCommand printed no pid: the PowerShell error MESSAGE line
+ * Why a detachedLaunchCommand printed no pid: the PowerShell error MESSAGE line
  * (the tail of a PowerShell error is CategoryInfo / FullyQualifiedErrorId,
- * which hides it), else the LAUNCHED line with its WMI return code, else the tail.
+ * which hides it), else the LAUNCHED line with its Win32 error code, else the tail.
  */
 export function launchFailureLine(text) {
   const lines = String(text ?? '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);

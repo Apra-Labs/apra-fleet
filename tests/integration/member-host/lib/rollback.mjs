@@ -12,6 +12,8 @@
 export const MEMBER_FLEET_DIR = '$HOME/.apra-fleet';
 export const BACKUP_GLOB = '$HOME/.apra-fleet-replace-backup-*';
 export const ROLLBACK_OK = 'ROLLBACK-OK';
+/** The member's llm_provider (run.mjs registers it so): only claude / opencode members get a member install. */
+export const MEMBER_PROVIDER = 'claude';
 
 // What a backup directory may look like before it is put into a command.
 const BACKUP_RE = /^\/[A-Za-z0-9._\/-]*\/\.apra-fleet-replace-backup-[A-Za-z0-9._-]+$/;
@@ -43,7 +45,9 @@ function assertBackup(backupDir) {
  */
 export function guardedReinstallCommand(backupDir) {
   const b = assertBackup(backupDir);
-  return `chmod +x '${b}/apra-fleet.exe' && '${b}/apra-fleet.exe' install --llm none --force`;
+  // --llm <the member's provider>, as the product's own rollback steps do
+  // (buildReplaceFullInstallPlan). A release install takes no "none" provider.
+  return `chmod +x '${b}/apra-fleet.exe' && '${b}/apra-fleet.exe' install --llm ${MEMBER_PROVIDER} --force`;
 }
 
 /**
