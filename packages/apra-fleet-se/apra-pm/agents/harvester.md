@@ -33,12 +33,10 @@ a missing `base-branch`/`branch`: do not guess which branch to diff.
 
 If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
 tool-discovery step is needed, and they always act on your own work folder, so never
-pass a repository path or other scope argument to them. Otherwise, read the injected
-"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
-the orchestrator fetched for the modules touched during the sprint.
-If a KB or code tool call fails, use that block if your prompt has one; otherwise
-continue without KB. A missing or failing KB or code tool is never a reason to stop:
-never report this dispatch as blocked because of it. From whichever source you have,
+pass a repository path or other scope argument to them. Otherwise, or if a KB or code tool
+call fails, continue without KB -- this role gets no KNOWLEDGE BANK block in its
+dispatch prompt. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From the tools,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
@@ -54,7 +52,7 @@ record the fallback. Never poll `code_status` in a loop waiting for the index.
 2. When you extract durable knowledge during harvest -- anything non-obvious that future
    sprints should know -- add it to the `kb_captures` array of your structured output
    (type "knowledge" or "learning"; dedupe against the KB first, with `kb_query` when
-   present, otherwise the block). The engine records it from that field; do not write to
+   present). The engine records it from that field; do not write to
    the KB yourself.
 3. If a retrieved KB entry proves wrong in practice, say so in your `notes`, naming the
    entry and what was wrong.

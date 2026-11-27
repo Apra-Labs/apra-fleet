@@ -33,7 +33,7 @@ import {
     allDispatchPolicies,
     pushesCode,
 } from '../fleet-sprint/role-policies.mjs';
-import { KB_SELF_INJECTING_ROLES, resolveDispatchInactivityTimeoutS } from '../fleet-sprint/runner.js';
+import { KB_SELF_INJECTING_ROLES, KB_BLOCK_ROLES, resolveDispatchInactivityTimeoutS } from '../fleet-sprint/runner.js';
 import { dispatchRole, resolveBudget, clampMaxTurns } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import {
@@ -828,7 +828,7 @@ describe('role policy table: per-dispatch fields match runner.js', () => {
             // --- KB injection source ---------------------------------------
             const expected = p.agentType === null
                 ? 'none'
-                : (KB_SELF_INJECTING_ROLES.has(p.agentType) ? 'prompt-builder' : 'wrapper');
+                : (KB_SELF_INJECTING_ROLES.has(p.agentType) ? 'prompt-builder' : (KB_BLOCK_ROLES.has(p.agentType) ? 'wrapper' : 'none'));
             assert.strictEqual(
                 p.kbInjection,
                 expected,
@@ -1603,12 +1603,12 @@ describe('role policy table: every named variance is expressed as data', () => {
         );
     });
 
-    test('streak assignment carries no persona, so it is the one dispatch with no knowledge block', () => {
+    test('streak assignment carries no persona, so it gets no knowledge block', () => {
         const p = policyFor('streak-assignment');
         assert.strictEqual(p.agentType, null);
         assert.strictEqual(p.kbInjection, 'none');
         assert.deepStrictEqual(
-            allDispatchPolicies().filter((d) => d.kbInjection === 'none').map((d) => d.role),
+            allDispatchPolicies().filter((d) => d.kbInjection === 'none' && d.agentType === null).map((d) => d.role),
             ['streak-assignment', 'streak-assignment'],
             'Both the grouping dispatch and its semantic-repair re-ask run without a persona.',
         );
@@ -1621,6 +1621,18 @@ describe('role policy table: every named variance is expressed as data', () => {
             allDispatchPolicies().filter((p) => p.kbInjection === 'prompt-builder').map((p) => p.agentType)
         );
         assert.deepStrictEqual([...selfInjecting].sort(), [...KB_SELF_INJECTING_ROLES].sort());
+    });
+
+    test('only planner, plan-reviewer, doer and reviewer get a knowledge block; the other personas get none', () => {
+        const withBlock = new Set(
+            allDispatchPolicies().filter((p) => p.kbInjection !== 'none').map((p) => p.agentType)
+        );
+        assert.deepStrictEqual([...withBlock].sort(), ['doer', 'plan-reviewer', 'planner', 'reviewer']);
+        assert.deepStrictEqual([...withBlock].sort(), [...KB_BLOCK_ROLES].sort());
+        const noBlock = new Set(
+            allDispatchPolicies().filter((p) => p.kbInjection === 'none' && p.agentType).map((p) => p.agentType)
+        );
+        assert.deepStrictEqual([...noBlock].sort(), ['deployer', 'harvester', 'integ-test-runner', 'regression-test-runner']);
     });
 });
 
@@ -1770,7 +1782,7 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 // --- KB injection source ---------------------------------------
                 const expectedKb = p.agentType === null
                     ? 'none'
-                    : (KB_SELF_INJECTING_ROLES.has(p.agentType) ? 'prompt-builder' : 'wrapper');
+                    : (KB_SELF_INJECTING_ROLES.has(p.agentType) ? 'prompt-builder' : (KB_BLOCK_ROLES.has(p.agentType) ? 'wrapper' : 'none'));
                 assert.strictEqual(
                     p.kbInjection,
                     expectedKb,

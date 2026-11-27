@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { runFinalReviewPhase } from '../fleet-sprint/phases/final-review.mjs';
+import { createKbInjection } from '../fleet-sprint/kb-injection.mjs';
 
 // =============================================================================
 // FINAL REVIEW'S DEMOTION-CANDIDATE CALL SITE.
@@ -164,6 +165,25 @@ describe('Final Review: demotion candidates reach the final-verdict prompt', () 
             'final review must ask for the cumulative baseBranch...branch scope explicitly, never leave it to be inferred',
         );
         assert.equal(demotionCalls[0].member, REVIEWER, 'the candidates must come from the reviewer role member, same as promotionCandidates');
+    });
+
+    test('the final review carries both the KNOWLEDGE BANK block and the demotion-candidate offer', async () => {
+        const { state, prompts } = harness();
+        const blockRoles = [];
+        const knowledgeFor = async () => ({
+            entries: [{ id: 'kb-know-1', type: 'knowledge', confidence: 'CONFIRMED', title: 'Known final-review fact', summary: 'a confirmed fact', source_files: ['server/x.js'] }],
+            source: 'query',
+        });
+        const real = createKbInjection({ kbWork: { knowledgeFor }, log: () => {} });
+        state.kbInjection = { ...real, blockFor: (d) => { blockRoles.push(d.role); return real.blockFor(d); } };
+
+        await runFinalReviewPhase(state);
+
+        assert.deepEqual(blockRoles, ['reviewer'], 'the final review reads its knowledge block as the reviewer');
+        assert.match(prompts[0], /KNOWLEDGE BANK -- what this repo already knows/);
+        assert.ok(prompts[0].includes('Known final-review fact'));
+        for (const e of DEMOTE_CANDIDATES) assert.ok(prompts[0].includes(e.id), `demotion candidate ${e.id} missing`);
+        assert.match(prompts[0], /kb_demotions/);
     });
 
     test('renders no demotion block when nothing is offered', async () => {

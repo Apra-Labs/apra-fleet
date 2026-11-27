@@ -56,6 +56,42 @@ const ROLE_DOER = kbRoleConst('doer');
  */
 export const KB_MAX_KNOWLEDGE_ENTRIES = 12;
 
+/** Longest summary the knowledge block carries; longer ones are cut on a word boundary and end in "...". */
+export const KB_BLOCK_SUMMARY_MAX = 300;
+
+/** Source files listed per knowledge-block entry; the rest are counted in a trailing "+N more" item. */
+export const KB_BLOCK_SOURCE_FILES_MAX = 3;
+
+/**
+ * A summary capped at `max` chars (the "..." included), cut at the last
+ * whitespace before the cap. A summary with no usable break (one long token)
+ * is cut mid-word rather than overrunning the cap. Non-strings pass through.
+ *
+ * @param {unknown} summary
+ * @param {number} [max]
+ * @returns {unknown}
+ */
+export function capKbBlockSummary(summary, max = KB_BLOCK_SUMMARY_MAX) {
+    if (typeof summary !== 'string' || summary.length <= max) return summary;
+    const room = summary.slice(0, max - 3);
+    const brk = room.search(/\s\S*$/);
+    const cut = brk > max / 2 ? room.slice(0, brk) : room;
+    return cut.trimEnd() + '...';
+}
+
+/**
+ * The first `max` source files, followed by a "+N more" string when N more
+ * exist. Non-arrays pass through.
+ *
+ * @param {unknown} files
+ * @param {number} [max]
+ * @returns {unknown}
+ */
+export function trimKbBlockSourceFiles(files, max = KB_BLOCK_SOURCE_FILES_MAX) {
+    if (!Array.isArray(files) || files.length <= max) return files;
+    return [...files.slice(0, max), `+${files.length - max} more`];
+}
+
 /**
  * The injection rule for every engine-built knowledge block: only CONFIRMED
  * entries that sit outside any unresolved contradiction reach a role prompt.
@@ -3271,6 +3307,17 @@ export function createKbPrimingClient(opts = {}) {
 export const KB_SELF_INJECTING_ROLES = Object.freeze(new Set([ROLE_DOER, ROLE_REVIEWER]));
 
 /**
+ * The only roles that receive the KNOWLEDGE BANK block: planner,
+ * plan-reviewer, doer and reviewer (per-round reviews and the final review).
+ * Every other dispatch -- deployer, the test runners, harvester, and any role
+ * added later -- gets no block and triggers no KB read for one. An allowlist,
+ * so a new role is excluded by default.
+ */
+export const KB_BLOCK_ROLES = Object.freeze(new Set([
+    kbRoleConst('planner'), kbRoleConst('plan-reviewer'), ROLE_DOER, ROLE_REVIEWER,
+]));
+
+/**
  * FTS terms for a dispatch's kb_query, drawn from what the engine already
  * holds: the beads being worked and their ids.
  *
@@ -3340,16 +3387,23 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
         + 'in your notes rather than bending your work to fit the entry.\n'
         + 'You do not need a kb_* tool to read these entries; they do not replace any kb_* lookup '
         + 'your role instructions call for. '
+        + 'A summary ending in "..." was cut short and carries its id; if you have kb_query, '
+        + 'query it with the entry title to read the full entry. "+N more" counts unlisted '
+        + 'source files.\n'
         + captureLine
+        // Compact on purpose: no indentation, no confidence (always CONFIRMED
+        // here), capped summary, trimmed file list, and an id only on a row
+        // whose summary was cut. Selection and order above are untouched.
         + wrapUntrustedBlock(label, JSON.stringify(
-            injectable.map((e) => ({
-                confidence: e.confidence,
-                title: e.title,
-                summary: e.summary,
-                source_files: e.source_files,
-            })),
-            null,
-            2
+            injectable.map((e) => {
+                const summary = capKbBlockSummary(e.summary);
+                return {
+                    ...(summary !== e.summary ? { id: e.id } : {}),
+                    title: e.title,
+                    summary,
+                    source_files: trimKbBlockSourceFiles(e.source_files),
+                };
+            })
         )),
     ];
 }

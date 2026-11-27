@@ -234,7 +234,7 @@ import {
 // constants), so these five join that single home rather than starting a
 // second one.
 import {
-    createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
+    createKbPrimingClient, KB_SELF_INJECTING_ROLES, KB_BLOCK_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 } from './kb.mjs';
 import { createKbInjection } from './kb-injection.mjs';
@@ -436,7 +436,7 @@ export {
 // kbQueryTerms, KB_SELF_INJECTING_ROLES) from runner.js keep working; kb.mjs
 // is the single source of truth for their implementation (apra-fleet-3swo.6.11).
 export {
-    createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
+    createKbPrimingClient, KB_SELF_INJECTING_ROLES, KB_BLOCK_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 };
 // member-call.mjs is the single owner of memberCall/listTools (a MEMBER-scoped
@@ -1310,13 +1310,14 @@ async function runSprintCycle(context) {
         const { tier_context: tierContext, ...optsRest } = opts;
         opts = optsRest;
         let finalPrompt = prompt;
-        if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
-            // Only promise the kb_captures channel to a persona whose returned
-            // captures the engine actually applies (e.g. harvester); planner,
-            // plan-reviewer, deployer and the test runners have none.
-            // A member whose own fleet MCP was verified at sprint init reads
-            // the KB itself and gets no block; every other member gets one,
-            // fetched from the repository's kb_maintainer (kb-injection.mjs).
+        if (opts.agentType && KB_BLOCK_ROLES.has(opts.agentType)
+            && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
+            // Only planner and plan-reviewer reach here (KB_BLOCK_ROLES minus
+            // the self-injecting doer/reviewer); every other persona gets no
+            // block and no KB read. The block is fetched from the
+            // repository's kb_maintainer (kb-injection.mjs). Only promise the
+            // kb_captures channel to a persona whose returned captures the
+            // engine actually applies.
             const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
             const [block] = kbInjection
                 ? await kbInjection.blockFor({

@@ -2330,6 +2330,9 @@ export async function runDevelopLoopScenario(tag, {
     tierPolicy, tierOverrides,
     // Optional injected KB work client: main() reads context.kbWork.
     kbWork,
+    // Optional injected KNOWLEDGE BANK injection (kb-injection.mjs shape):
+    // main() reads context.kbInjection.
+    kbInjection,
     // Optional `args.kb_demotion_loop` passthrough ('on' | 'off').
     kbDemotionLoop,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
@@ -2503,8 +2506,12 @@ export async function runDevelopLoopScenario(tag, {
             };
             // An injected kbWork client is not a CLI arg; hand it to main() the way
             // WorkflowEngine.executeFile hands over its context.
-            result = kbWork !== undefined
-                ? await workflow.runWithContext(sprintArgs, async (ctx) => (await import('../../fleet-sprint/runner.js')).main({ ...ctx, kbWork }))
+            result = (kbWork !== undefined || kbInjection !== undefined)
+                ? await workflow.runWithContext(sprintArgs, async (ctx) => (await import('../../fleet-sprint/runner.js')).main({
+                    ...ctx,
+                    ...(kbWork !== undefined ? { kbWork } : {}),
+                    ...(kbInjection !== undefined ? { kbInjection } : {}),
+                }))
                 : await engine.executeFile(scriptPath, sprintArgs, true);
         } catch (err) {
             error = err;

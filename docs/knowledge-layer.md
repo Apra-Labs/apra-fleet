@@ -328,10 +328,21 @@ wording test must all describe this scope together.
 sessions are not filtered. `kb_capture` tags a member's global capture with its
 owner tag, so the filter covers every member capture.
 
-**Sprint KB injection.** The engine injects the KB block into every dispatched
-member's prompt, verified or not, remote or local. The block is always fetched
+**Sprint KB injection.** The engine injects the KB block only for planner,
+plan-reviewer, doer and reviewer (per-round reviews and the final review), on
+any member, verified or not, remote or local (`KB_BLOCK_ROLES` in
+`fleet-sprint/kb.mjs`). Deployer, the test runners and harvester get no block
+and the engine does no KB read for them. The block is always fetched
 from the kb_maintainer member, so a non-maintainer remote member still receives
 the project knowledge.
+
+Block shape (`kbKnowledgeBlock`): at most 12 CONFIRMED, undisputed entries in
+relevance order, rendered as one line of compact JSON inside the untrusted-data
+fence. Each row is `{title, summary, source_files}` -- no `confidence`
+(always CONFIRMED). `summary` is capped at 300 chars, cut on a word boundary
+and ending in `...`; only such a cut row also carries the entry `id`.
+`source_files` lists the first 3 files plus a `"+N more"` string when more
+exist.
 
 ### Member-session tool calls
 

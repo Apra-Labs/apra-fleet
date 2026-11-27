@@ -65,12 +65,10 @@ from and does not gate yours.
 
 If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
 tool-discovery step is needed, and they always act on your own work folder, so never
-pass a repository path or other scope argument to them. Otherwise, read the injected
-"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
-the orchestrator fetched for the features you were handed.
-If a KB or code tool call fails, use that block if your prompt has one; otherwise
-continue without KB. A missing or failing KB or code tool is never a reason to stop:
-never report this dispatch as blocked because of it. From whichever source you have,
+pass a repository path or other scope argument to them. Otherwise, or if a KB or code tool
+call fails, continue without KB -- this role gets no KNOWLEDGE BANK block in its
+dispatch prompt. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From the tools,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
@@ -84,9 +82,8 @@ record the fallback. Never poll `code_status` in a loop waiting for the index.
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    relevant to the features you were handed.
 2. Any judgment that depends on what the KB does or does not record (e.g. whether a test
-   is known to be environment-sensitive) is made from the live result or the injected
-   block, never inferred from a tool failure. An entry recording that a test is
-   environment-sensitive changes how you read a single red run.
+   is known to be environment-sensitive) is made from the live result, never inferred
+   from a tool failure. An entry recording that a test is environment-sensitive changes how you read a single red run.
 3. This role has no KB-capture channel: when a test turns out to be flaky or
    environment-sensitive, or the sandbox needs a step the playbook does not record, note
    the finding in your own report.
