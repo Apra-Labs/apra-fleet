@@ -108,6 +108,9 @@
 //                          helper file named (member-scoped or legacy), so a
 //                          host credential manager cannot answer for a dead
 //                          fleet helper. No shell expansion in the string.
+//   gitRefPathCommand      runner.js bible reads (`git show <ref>:<path>`):
+//                          gitbash prefixes MSYS_NO_PATHCONV=1 so MSYS does
+//                          not rewrite the argument; identity elsewhere.
 //
 // Deliberately NOT included, so this stays an interface rather than a
 // catalogue:

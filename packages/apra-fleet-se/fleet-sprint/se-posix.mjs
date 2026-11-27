@@ -131,6 +131,16 @@ export class SePosixCommands {
   }
 
   /**
+   * A git command carrying a `<ref>:<path>` argument. Identity here: only the
+   * MSYS runtime (gitbash) rewrites such arguments, so POSIX stays byte-identical.
+   * @param {string} gitCommand
+   * @returns {string}
+   */
+  gitRefPathCommand(gitCommand) {
+    return String(gitCommand);
+  }
+
+  /**
    * A path under the MEMBER's home directory. `$HOME` (not `~`) matches what
    * core's linux gitCredentialHelperWrite() wrote.
    * @param {string} relative

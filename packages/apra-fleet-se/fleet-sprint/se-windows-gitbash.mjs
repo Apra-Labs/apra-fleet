@@ -82,6 +82,18 @@ export class SeWindowsGitbashCommands extends SePosixCommands {
   }
 
   /**
+   * A git command carrying a `<ref>:<path>` argument. Git Bash (MSYS) rewrites
+   * an argument such as `origin/main:.fleet/x.json` as a POSIX path list
+   * (`origin\main;.fleet\x.json`) before git.exe sees it; MSYS_NO_PATHCONV=1
+   * (a plain env assignment, no expansion) turns that conversion off.
+   * @param {string} gitCommand
+   * @returns {string}
+   */
+  gitRefPathCommand(gitCommand) {
+    return `MSYS_NO_PATHCONV=1 ${String(gitCommand)}`;
+  }
+
+  /**
    * Wrap a whole PowerShell SCRIPT (not a single command string) into a
    * bash-invocable form, for the handful of member-bound scripts that have
    * no safe bash equivalent (installPinnedDolt's Invoke-WebRequest/

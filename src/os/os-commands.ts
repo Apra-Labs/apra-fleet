@@ -49,6 +49,27 @@ export function unsetEnvSedExpr(name: string, opts?: UnsetEnvOptions): string {
 }
 
 /**
+ * POSIX members keep a persisted var in its own owner-only file (mode 0600,
+ * dir 0700), never in a shared shell profile (often 0644): the profile holds
+ * only envSourceLine(), which carries the path and no secret. `$HOME` stays
+ * literal -- the member's shell expands it.
+ */
+export const FLEET_ENV_DIR = '$HOME/.apra-fleet/env';
+
+/** The profile line that loads NAME's owner-only file (no value in it). */
+export function envSourceLine(name: string): string {
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+  const f = `"${FLEET_ENV_DIR}/${name}"`;
+  return `if [ -r ${f} ]; then . ${f}; fi # ${FLEET_ENV_MARKER}`;
+}
+
+/** sed address+command that removes envSourceLine(name) (exact name: the closing quote ends it). */
+export function envSourceLineSedExpr(name: string): string {
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+  return `/\\.apra-fleet\\/env\\/${name}".*# ${FLEET_ENV_MARKER}/d`;
+}
+
+/**
  * apra-fleet-lmtg.2: fork descriptor threaded through buildAgentPromptCommand
  * so both POSIX and Windows builders can emit a provider's fork invocation
  * (source-seeded, new-session-id output) instead of the ordinary
@@ -142,9 +163,10 @@ export interface OsCommands {
   persistEnvFileContent(name: string, value: string): string;
   persistEnvFromFile(name: string, filePath: string): string;
   /**
-   * Commands that remove a persisted env var. POSIX shells: by default only
-   * the profile lines carrying FLEET_ENV_MARKER (a hand-written export of the
-   * same NAME is left in place); `{ all: true }` removes every
+   * Commands that remove a persisted env var. POSIX shells: the owner-only
+   * env file and its profile source line always go; of the export lines, by
+   * default only those carrying FLEET_ENV_MARKER (a hand-written export of
+   * the same NAME is left in place); `{ all: true }` removes every
    * `export NAME=` line. Windows PowerShell persists to a User env var, which
    * cannot carry a marker -- `all` has no effect there and the caller must
    * decide (from its own delivery record) whether to unset at all.
