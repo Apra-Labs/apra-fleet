@@ -21,7 +21,7 @@ import {
     formatSiteLocations,
 } from './helpers/dispatch-pin-scanner.mjs';
 import { planReviewerVerdict, streakAssignment } from '../fleet-sprint/contracts.mjs';
-import { KB_SELF_INJECTING_ROLES, FIXED_ROLE_TIER as RUNNER_FIXED_ROLE_TIER } from '../fleet-sprint/runner.js';
+import { KB_SELF_INJECTING_ROLES, KB_BLOCK_ROLES, FIXED_ROLE_TIER as RUNNER_FIXED_ROLE_TIER } from '../fleet-sprint/runner.js';
 // PLANNING_ENGINE_DISPATCHES, not the shared ENGINE_DISPATCHES union: this
 // file pins the PLANNING side. Once the execution-side migration
 // (apra-fleet-3swo.5.7) starts adding its own engine-served dispatches to the
@@ -273,7 +273,7 @@ describe('planning-role dispatch ladders: per-dispatch pins', () => {
 
             // --- KB knowledge injection -----------------------------------------
             // agent() injects the KNOWLEDGE BANK block only for a dispatch that
-            // carries an agentType outside KB_SELF_INJECTING_ROLES; a dispatch
+            // carries an agentType in KB_BLOCK_ROLES outside KB_SELF_INJECTING_ROLES; a dispatch
             // with no agentType (streak assignment) gets none.
             const agentType = merged.get('agentType') ?? null;
             assert.strictEqual(
@@ -282,7 +282,7 @@ describe('planning-role dispatch ladders: per-dispatch pins', () => {
                 `${pin.name} must pass agentType=${pin.agentType === null ? '(absent)' : pin.agentType}.`
             );
             const roleLiteral = agentType ? agentType.replace(/^['"]|['"]$/g, '') : null;
-            const kbInjected = Boolean(roleLiteral) && !KB_SELF_INJECTING_ROLES.has(roleLiteral);
+            const kbInjected = Boolean(roleLiteral) && KB_BLOCK_ROLES.has(roleLiteral) && !KB_SELF_INJECTING_ROLES.has(roleLiteral);
             assert.strictEqual(
                 kbInjected,
                 pin.agentType !== null,
@@ -331,13 +331,14 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
     test('the KNOWLEDGE BANK block reaches planning roles from the engine, not from a kb_* tool call', () => {
         const stripped = stripComments(SRC);
         assert.ok(
-            /if\s*\(opts\.agentType\s*&&\s*!KB_SELF_INJECTING_ROLES\.has\(opts\.agentType\)\s*&&\s*opts\.member_name\)/.test(stripped),
-            'agent() must inject the knowledge block for any dispatch carrying an agentType that is not self-injecting.'
+            /if\s*\(opts\.agentType\s*&&\s*KB_BLOCK_ROLES\.has\(opts\.agentType\)\s*&&\s*!KB_SELF_INJECTING_ROLES\.has\(opts\.agentType\)\s*&&\s*opts\.member_name\)/.test(stripped),
+            'agent() must inject the knowledge block only for a KB_BLOCK_ROLES persona that is not self-injecting.'
         );
         // Neither planning role places the block itself, so both depend on the
         // wrapper above; doer/reviewer are the documented self-injecting pair.
         assert.ok(!KB_SELF_INJECTING_ROLES.has('planner'), 'planner must receive its knowledge block from the agent() wrapper.');
         assert.ok(!KB_SELF_INJECTING_ROLES.has('plan-reviewer'), 'plan-reviewer must receive its knowledge block from the agent() wrapper.');
+        assert.ok(KB_BLOCK_ROLES.has('planner') && KB_BLOCK_ROLES.has('plan-reviewer'), 'both planning roles are block roles.');
     });
 
     test('only the planner family and the audited long-unattended-phase roles arm a dispatch watchdog', () => {
@@ -1035,7 +1036,7 @@ describe('planning-role dispatch ladders: per-dispatch pins (engine-served)', ()
 
             // --- KB knowledge injection -----------------------------------------
             assert.strictEqual(o.agentType ?? null, pin.agentType, `${pin.name}: persona.`);
-            const kbInjected = Boolean(pin.agentType) && !KB_SELF_INJECTING_ROLES.has(pin.agentType);
+            const kbInjected = Boolean(pin.agentType) && KB_BLOCK_ROLES.has(pin.agentType) && !KB_SELF_INJECTING_ROLES.has(pin.agentType);
             assert.strictEqual(
                 kbInjected,
                 pin.agentType !== null,

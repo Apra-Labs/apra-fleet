@@ -10,12 +10,10 @@ tools: [Read, Bash, Grep, Glob, ToolSearch]
 
 If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
 tool-discovery step is needed, and they always act on your own work folder, so never
-pass a repository path or other scope argument to them. Otherwise, read the injected
-"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
-the orchestrator fetched for the subsystems `regression-test-playbook.md` exercises.
-If a KB or code tool call fails, use that block if your prompt has one; otherwise
-continue without KB. A missing or failing KB or code tool is never a reason to stop:
-never report this dispatch as blocked because of it. From whichever source you have,
+pass a repository path or other scope argument to them. Otherwise, or if a KB or code tool
+call fails, continue without KB -- this role gets no KNOWLEDGE BANK block in its
+dispatch prompt. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From the tools,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
@@ -30,7 +28,7 @@ record the fallback. Never poll `code_status` in a loop waiting for the index.
    subsystems `regression-test-playbook.md` exercises.
 2. Known-flaky tests and known environment setup/teardown gotchas are the point here -- they
    change whether a red run is a real regression or a known environment failure. Make
-   that judgment from the live result or the injected block, never from a tool failure.
+   that judgment from the live result, never from a tool failure.
 3. This role has no KB-capture channel: when a playbook step fails for a non-obvious
    reason, or its setup/teardown turns out to need a step the playbook does not
    record, note the regression gotcha in your own report. A regression gotcha you had

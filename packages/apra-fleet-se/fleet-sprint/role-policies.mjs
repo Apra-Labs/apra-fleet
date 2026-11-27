@@ -90,12 +90,14 @@ export const MODEL_KINDS = Object.freeze(['fixed', 'per-bead', 'inherited']);
 
 /**
  * Where a dispatch's KNOWLEDGE BANK block comes from.
- *   'wrapper'        -- injected by the shared dispatch wrapper for any role
- *                       outside KB_SELF_INJECTING_ROLES;
+ *   'wrapper'        -- injected by the shared dispatch wrapper for a role in
+ *                       KB_BLOCK_ROLES outside KB_SELF_INJECTING_ROLES
+ *                       (planner, plan-reviewer);
  *   'prompt-builder' -- the role's own prompt builder places it (doer,
  *                       reviewer, and the reviewer-persona final review);
- *   'none'           -- the dispatch carries no role persona at all, so it
- *                       receives no block (streak assignment).
+ *   'none'           -- no block: a persona outside KB_BLOCK_ROLES (deployer,
+ *                       the test runners, harvester) or a dispatch with no
+ *                       persona at all (streak assignment).
  */
 export const KB_INJECTION_KINDS = Object.freeze(['wrapper', 'prompt-builder', 'none']);
 
@@ -1097,7 +1099,7 @@ const deployer = policy('deployer', {
         'Long, unattended, single dispatch gating every later phase with no parallel counterpart; a '
         + 'frozen-but-alive session here would otherwise hang the sprint with no client-side ceiling.'
     ),
-    kbInjection: 'wrapper',
+    kbInjection: 'none',
     retry: retry({
         attempts: 1,
         usageLimitPause: true,
@@ -1166,7 +1168,7 @@ const integTestRunner = policy('integ-test-runner', {
         'Long, unattended, single dispatch with no parallel counterpart; a frozen-but-alive session would '
         + 'otherwise hang the whole integ-test cycle for the full long maxTotalS budget with no way to abort early.'
     ),
-    kbInjection: 'wrapper',
+    kbInjection: 'none',
     retry: retry({
         attempts: 1,
         usageLimitPause: true,
@@ -1240,7 +1242,7 @@ const regressionTestRunner = policy('regression-test-runner', {
         'Long, unattended, single dispatch with no parallel counterpart; a frozen-but-alive session would '
         + 'otherwise hang the whole regression phase for the full long maxTotalS budget with no way to abort early.'
     ),
-    kbInjection: 'wrapper',
+    kbInjection: 'none',
     retry: retry({
         attempts: 1,
         usageLimitPause: true,
@@ -1324,7 +1326,7 @@ const harvester = policy('harvester', {
         + 'report before the run exits. Left disarmed: historical, and the low stakes of its own degrade path made '
         + 'a second kill-path a low priority here relative to the three roles this pass armed.'
     ),
-    kbInjection: 'wrapper',
+    kbInjection: 'none',
     retry: retry({
         attempts: 1,
         usageLimitPause: true,

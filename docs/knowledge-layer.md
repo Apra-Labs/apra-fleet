@@ -328,8 +328,11 @@ wording test must all describe this scope together.
 sessions are not filtered. `kb_capture` tags a member's global capture with its
 owner tag, so the filter covers every member capture.
 
-**Sprint KB injection.** The engine injects the KB block into every dispatched
-member's prompt, verified or not, remote or local. The block is always fetched
+**Sprint KB injection.** The engine injects the KB block only for planner,
+plan-reviewer, doer and reviewer (per-round reviews and the final review), on
+any member, verified or not, remote or local (`KB_BLOCK_ROLES` in
+`fleet-sprint/kb.mjs`). Deployer, the test runners and harvester get no block
+and the engine does no KB read for them. The block is always fetched
 from the kb_maintainer member, so a non-maintainer remote member still receives
 the project knowledge.
 

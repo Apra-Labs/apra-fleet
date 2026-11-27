@@ -577,7 +577,8 @@ ordered by reach:
    (how we deploy, what "healthy" means, what we verify) as enforced behavior,
    since agents execute them literally.
 6. **The Knowledge Bank (optional).** If you use apra-fleet's KB for the repo,
-   the engine adds a short knowledge block to role prompts. Only CONFIRMED
+   the engine adds a short knowledge block to the planner, plan-reviewer, doer
+   and reviewer prompts (no other role gets one). Only CONFIRMED
    entries that are not disputed (flagged for review or part of an open
    contradiction) are injected as knowledge; INFERRED and UNVERIFIED captures
    are not injected until they are promoted (the reviewer may be shown INFERRED

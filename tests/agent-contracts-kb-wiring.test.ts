@@ -39,6 +39,12 @@ function assetsByRole(): Map<string, string> {
 // Scoped out of the priming-specific assertion below; still covered by the other three.
 const KB_PRIMING_ROLES = ROLES.filter((r) => r !== 'kb-reconciler');
 
+// The fleet-sprint engine injects the KNOWLEDGE BANK block only for planner,
+// plan-reviewer, doer and reviewer. These four roles get no block, so their
+// prompts must not tell them to read one.
+const NO_BLOCK_ROLES = ['deployer', 'harvester', 'integ-test-runner', 'regression-test-runner'];
+const BLOCK_READING_ROLES = KB_PRIMING_ROLES.filter((r) => !NO_BLOCK_ROLES.includes(r));
+
 // KB redesign: every primed role uses the kb_* and code_* tools directly when they are
 // present in its session (no ToolSearch discovery probe, no repo_path/scope argument),
 // otherwise reads the engine-injected "KNOWLEDGE BANK" block, and on a tool failure
@@ -51,6 +57,7 @@ const TOOLS_WHEN_PRESENT = 'If the `kb_*` and `code_*` tools are present in your
 const BLOCK_OTHERWISE = 'Otherwise, read the injected "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt';
 const FALLBACK = 'If a KB or code tool call fails, use that block if your prompt has one; otherwise continue without KB.';
 const NEVER_BLOCKED = 'never report this dispatch as blocked because of it';
+const NO_BLOCK = 'Otherwise, or if a KB or code tool call fails, continue without KB -- this role gets no KNOWLEDGE BANK block in its dispatch prompt.';
 
 // This repo's prompt markdown hard-wraps prose across physical lines, so collapse
 // whitespace before a multi-word phrase check.
@@ -85,7 +92,7 @@ describe('every role contract carries working KB wiring', () => {
     expect(content).toContain('kb_session_prime');
   });
 
-  it.each(KB_PRIMING_ROLES)('%s: Claude and agy renders both carry tools-when-present, block-otherwise and the conditional fallback', (role) => {
+  it.each(BLOCK_READING_ROLES)('%s: Claude and agy renders both carry tools-when-present, block-otherwise and the conditional fallback', (role) => {
     const src = byRole.get(role)!;
     for (const [label, out] of [
       ['claude', transformAgentForClaude(src, `${role}.md`)],
@@ -98,6 +105,21 @@ describe('every role contract carries working KB wiring', () => {
       expect(flat, `${role} (${label})`).toContain(NEVER_BLOCKED);
       expect(body(out), `${role} (${label}): no ToolSearch probe in the body`).not.toContain('ToolSearch');
       expect(out, `${role} (${label})`).not.toMatch(/Knowledge Bank \(required/);
+    }
+  });
+
+  it.each(NO_BLOCK_ROLES)('%s: Claude and agy renders carry tools-when-present and continue-without-KB, and never mention an injected block', (role) => {
+    const src = byRole.get(role)!;
+    for (const [label, out] of [
+      ['claude', transformAgentForClaude(src, `${role}.md`)],
+      ['agy', renderAgy(src, role)],
+    ] as const) {
+      const flat = normalizeWhitespace(out);
+      expect(flat, `${role} (${label})`).toContain(TOOLS_WHEN_PRESENT);
+      expect(flat, `${role} (${label})`).toContain(NO_BLOCK);
+      expect(flat, `${role} (${label})`).toContain(NEVER_BLOCKED);
+      expect(flat, `${role} (${label})`).not.toMatch(/read the injected|use that block|otherwise the block/);
+      expect(body(out), `${role} (${label}): no ToolSearch probe in the body`).not.toContain('ToolSearch');
     }
   });
 
