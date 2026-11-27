@@ -126,3 +126,23 @@ The reverification expiry runs after the apply step. If the reviewer's promote
 is still queued (pull failed or maintainer busy), the id is reported
 dropped/withdrawn although the later commit merges it. The bible ends correct;
 only the report wording is wrong.
+
+## Final-review knowledge block excludes demotion candidates
+
+The final reviewer is offered a list of CONFIRMED entries to re-verify for
+possible demotion. The same entries must not also appear in that reviewer's
+KNOWLEDGE BANK block, or the reviewer is shown each claim twice (once as
+trusted context, once as a claim under test).
+
+`kbKnowledgeBlock` accepts an optional `excludeIds` (a Set or an array), and
+`blockFor` in the injection layer passes it through. Entries are removed by id
+from the raw entry list before the CONFIRMED filter and the
+`KB_MAX_KNOWLEDGE_ENTRIES` cap, so a removed entry frees its slot for another
+entry. Matching is on raw entries, never rendered text, because a rendered row
+carries its id only when its summary was cut.
+
+Only the final-review phase passes it, built from its demotion candidates, on
+both the injection path and the legacy priming path. Every other role keeps the
+default behaviour. If all entries are removed, the injection path renders the
+"No relevant CONFIRMED knowledge-bank entries" variant and the legacy path
+renders no block; an empty JSON list is never emitted.
