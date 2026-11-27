@@ -3352,12 +3352,20 @@ export function kbQueryTerms(beads, beadIds) {
 // role-policies.mjs agentTypeAppliesKbCaptures). When it is not, the block
 // must not promise that the orchestrator records a capture: those roles'
 // prompts tell them to note the finding in their own report instead.
-export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'prime', reportEmpty = false } = {}) {
+//
+// `excludeIds` (optional) drops entries by id from the RAW list, before the
+// CONFIRMED filter and the cap, so a removed entry frees its slot. Ids are
+// matched on the entries, never on rendered text (a row only carries its id
+// when its summary was cut). Used by final review to omit entries it already
+// offers for demotion.
+export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'prime', reportEmpty = false, excludeIds } = {}) {
     if (!Array.isArray(entries)) return [];
+    const excluded = excludeIds instanceof Set ? excludeIds : new Set(Array.isArray(excludeIds) ? excludeIds : []);
+    const candidates = excluded.size > 0 ? entries.filter((e) => !(e && excluded.has(e.id))) : entries;
     // CONFIRMED-first, capped at KB_MAX_KNOWLEDGE_ENTRIES. The sources
     // (relevantKnowledge, primeAll) hand entries over in relevance order, so a
     // stable CONFIRMED filter + slice keeps the most relevant ones.
-    const injectable = entries.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+    const injectable = candidates.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
     // The label names where the entries really came from: a per-dispatch
     // kb_query or the hint-driven kb_session_prime.
     const label = source === 'query' ? 'kb_query --top_entries' : 'kb_session_prime --top_entries';

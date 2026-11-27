@@ -237,6 +237,93 @@ describe('Final Review: demotion candidates reach the final-verdict prompt', () 
 });
 
 // =============================================================================
+// An entry offered for demotion is rendered by the demotion block, so the
+// KNOWLEDGE BANK block must not list it a second time. These FAIL on main
+// before the dedupe change: A (a demotion candidate) appeared in both blocks.
+// =============================================================================
+describe('Final Review: KNOWLEDGE BANK block omits entries offered for demotion', () => {
+    const A = { id: 'kb-demote-1', type: 'knowledge', confidence: 'CONFIRMED', title: 'Transit rows key on trackId', summary: 'open transit is keyed by (trackId, locationId)', source_files: ['server/transit.js'] };
+    const B = { id: 'kb-other-1', type: 'knowledge', confidence: 'CONFIRMED', title: 'Unoffered knowledge fact', summary: 'a fact nobody offers for demotion', source_files: ['server/x.js'] };
+    const OFFER_A = async () => [DEMOTE_CANDIDATES[0]];
+
+    // The text of the prompt before the demotion block starts.
+    const knowledgePart = (prompt) => {
+        const i = prompt.indexOf('kb_demotions');
+        return i < 0 ? prompt : prompt.slice(0, i);
+    };
+
+    function withInjection(state, entries) {
+        state.kbInjection = createKbInjection({
+            kbWork: { knowledgeFor: async () => ({ entries, source: 'query' }) },
+            log: () => {},
+        });
+    }
+
+    test('kbInjection path: B stays, A is dropped from the knowledge block, A still offered for demotion', async () => {
+        const { state, prompts } = harness({ demotionCandidates: OFFER_A });
+        withInjection(state, [A, B]);
+        await runFinalReviewPhase(state);
+
+        assert.ok(knowledgePart(prompts[0]).includes('KNOWLEDGE BANK -- what this repo already knows'));
+        assert.ok(prompts[0].includes(B.title), 'unoffered entry must still appear');
+        assert.equal(prompts[0].split(A.title).length, 2, 'A title must appear exactly once (demotion block only)');
+        assert.ok(prompts[0].includes('kb-demote-1'), 'demotion offer still lists A');
+    });
+
+    test('legacy path (no kbInjection): B stays, A is dropped from the knowledge block', async () => {
+        const { state, prompts } = harness({ demotionCandidates: OFFER_A });
+        state.kbPriming = { knowledgeOf: () => [A, B] };
+        await runFinalReviewPhase(state);
+
+        assert.ok(prompts[0].includes(B.title));
+        assert.equal(prompts[0].split(A.title).length, 2, 'A title must appear exactly once (demotion block only)');
+        assert.ok(prompts[0].includes('kb-demote-1'));
+    });
+
+    test('every entry offered: kbInjection path renders the empty variant, no [] list', async () => {
+        const { state, prompts } = harness({ demotionCandidates: OFFER_A });
+        withInjection(state, [A]);
+        await runFinalReviewPhase(state);
+
+        assert.match(prompts[0], /No relevant CONFIRMED knowledge-bank entries/);
+        assert.ok(!prompts[0].includes('kb_query --top_entries\n[]'), 'no wrapper around an empty list');
+        assert.ok(!/\n\[\]\n/.test(prompts[0]), 'no empty JSON list in the prompt');
+    });
+
+    test('every entry offered: legacy path renders no knowledge block at all', async () => {
+        const { state, prompts } = harness({ demotionCandidates: OFFER_A });
+        state.kbPriming = { knowledgeOf: () => [A] };
+        await runFinalReviewPhase(state);
+
+        assert.ok(!/KNOWLEDGE BANK -- what this repo already knows/.test(prompts[0]));
+        assert.ok(!/\n\[\]\n/.test(prompts[0]));
+    });
+
+    test('no demotion offer leaves the block unchanged (A stays)', async () => {
+        const { state, prompts } = harness({ demotionCandidates: async () => [] });
+        withInjection(state, [A, B]);
+        await runFinalReviewPhase(state);
+        assert.ok(prompts[0].includes(A.title) && prompts[0].includes(B.title));
+    });
+
+    test('blockFor without excludeIds is unchanged for every role, even when ids are demotion candidates elsewhere', async () => {
+        const entries = [A, B];
+        const inj = createKbInjection({
+            kbWork: { knowledgeFor: async () => ({ entries, source: 'query' }) },
+            log: () => {},
+        });
+        for (const role of ['reviewer', 'doer', 'planner', 'plan-reviewer']) {
+            const plain = await inj.blockFor({ role, member: 'm', captureChannel: true });
+            const withUndefined = await inj.blockFor({ role, member: 'm', captureChannel: true, excludeIds: undefined });
+            assert.deepEqual(plain, withUndefined, `${role}: output must be identical without the option`);
+            assert.ok(plain[0].includes(A.title) && plain[0].includes(B.title), `${role}: both entries rendered`);
+        }
+        const excluded = await inj.blockFor({ role: 'reviewer', member: 'm', excludeIds: new Set([A.id]) });
+        assert.ok(!excluded[0].includes(A.title) && excluded[0].includes(B.title));
+    });
+});
+
+// =============================================================================
 // FINAL REVIEW VERDICT -> BIBLE COMMIT, with the REAL kb work client. A FAIL
 // verdict seals CONFIRMATIONS only: the final review's withdrawals (and
 // restores) still reach kb_bible_commit, because they are merge-gated -- a

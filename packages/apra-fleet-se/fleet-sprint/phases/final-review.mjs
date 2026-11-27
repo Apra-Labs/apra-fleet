@@ -340,6 +340,17 @@ export async function runFinalReviewPhase({
     if (finalKbDemoteCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbDemoteCandidates.length} CONFIRMED entr(ies) to the final reviewer for demotion.`);
     }
+    // An entry offered for demotion is rendered in full by the demotion block;
+    // listing it again in the KNOWLEDGE BANK block is a duplicate. Dedupe by id
+    // on the raw entries (the rendered block only carries ids on cut rows).
+    const finalKbDemoteIds = new Set(
+        finalKbDemoteCandidates.map((e) => e && e.id).filter((id) => typeof id === 'string' && id),
+    );
+    const finalKbKnowledgeMinusOffered = (entries) => (
+        finalKbDemoteIds.size > 0 && Array.isArray(entries)
+            ? entries.filter((e) => !(e && finalKbDemoteIds.has(e.id)))
+            : entries
+    );
     // apra-fleet-3swo.5.7: the final-review ladder -- its dispatch, its
     // read-side git-sync bracket, its max_turns-exhaustion resume at doubled
     // turns, its retry-once wrapper, its auth self-heal and its FAIL degrade --
@@ -390,13 +401,14 @@ export async function runFinalReviewPhase({
             deferredAtGoalIds: finalDeferredAtGoalIds,
             kbCandidates: finalKbCandidates,
             kbDemoteCandidates: finalKbDemoteCandidates,
-            kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(getMemberForRole('reviewer')),
+            kbKnowledge: kbInjection ? undefined : finalKbKnowledgeMinusOffered(kbPriming.knowledgeOf(getMemberForRole('reviewer'))),
             kbBlock: kbInjection
                 ? await kbInjection.blockFor({
                     role: 'reviewer',
                     member: getMemberForRole('reviewer'),
                     context: { ...(kbSprintContext || {}) },
                     captureChannel: true,
+                    ...(finalKbDemoteIds.size > 0 ? { excludeIds: finalKbDemoteIds } : {}),
                 })
                 : undefined,
         }),
