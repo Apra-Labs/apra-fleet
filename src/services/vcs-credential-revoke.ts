@@ -46,7 +46,7 @@ export interface VcsCredentialRevokeResult extends VcsDeployResult {
 /** Human line for a legacy global key cleanup, or '' when nothing worth saying happened. */
 export function describeLegacyGlobalKey(r: VcsCredentialRevokeResult): string {
   if (r.legacyLeftForSharer) {
-    return `[WARN] Upgrade: fleet's legacy global git credential helper was left in place because member "${r.legacyLeftForSharer.friendlyName}" runs as the same user on this host. Fleet no longer refreshes it, so a short-lived token in it (GitHub App: about 1 hour) stops working for git run outside fleet dispatches. See docs/design-git-auth.md "Upgrading from 0.4.5 or older".`;
+    return `[WARN] Upgrade: fleet's legacy global git credential helper was left in place because member "${r.legacyLeftForSharer.friendlyName}" runs as the same user on this host. Fleet no longer refreshes it, so a short-lived token in it (GitHub App: about 1 hour) stops working for git run outside fleet dispatches. Fix: run 'apra-fleet operator-auth github' once (a refreshing helper for git/dolt in your shell), and run gh as 'apra-fleet operator-auth exec -- gh ...'. See docs/design-git-auth.md "Upgrading from 0.4.5 or older".`;
   }
   const g = r.legacyGlobalKey;
   if (!g) return '';
@@ -57,7 +57,7 @@ export function describeLegacyGlobalKey(r: VcsCredentialRevokeResult): string {
   const kept = g.report.kept > 0
     ? `${g.report.kept} other value(s) on that key were not written by fleet and were kept`
     : (g.report.resetRemoved ? 'no other value was on that key, so it is now gone' : 'no other helper was on that key');
-  return `[WARN] Upgrade: removed fleet's legacy helper from global git config key ${key} (${kept}). Git run OUTSIDE fleet dispatches (your shell, cron, hooks) no longer gets the fleet token for ${g.scopeUrl}; fleet dispatches are unaffected. To keep host git using it, see docs/design-git-auth.md "Upgrading from 0.4.5 or older".`;
+  return `[WARN] Upgrade: removed fleet's legacy helper from global git config key ${key} (${kept}). Git run OUTSIDE fleet dispatches (your shell, cron, hooks) no longer gets the fleet token for ${g.scopeUrl}; fleet dispatches are unaffected. To keep host git working, run 'apra-fleet operator-auth github' once (and 'apra-fleet operator-auth exec -- gh ...' for gh). See docs/design-git-auth.md "Upgrading from 0.4.5 or older".`;
 }
 
 async function removeLegacyGlobal(

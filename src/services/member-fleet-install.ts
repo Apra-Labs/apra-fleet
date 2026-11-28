@@ -1379,7 +1379,13 @@ async function replaceFullInstall(
       const found = fleetSeLines(r.stdout);
       // A live sprint refuses up front; an idle supervisor is stopped next.
       if (found.some(l => l.startsWith('FLEET_SE sprint '))) {
-        return failedAt(step.name, `fleet-sprint work is running on the member (${found.join('; ')})`);
+        // An unverified sprint is a live lock pid whose command line could not be read.
+        const stale = found.filter(l => l.startsWith('FLEET_SE sprint ') && / unverified( |$)/.test(l)).map(l => {
+          const pid = /pid=(\d+)/.exec(l)?.[1] ?? '?';
+          const lock = / lock=(.+)$/.exec(l)?.[1];
+          return `pid ${pid}'s command line could not be read; if it is not a fleet-sprint (a stale lock whose pid was reused), delete the lock file ${lock ?? 'named by fleet-se-check'} on the member, then run replace-full again`;
+        });
+        return failedAt(step.name, `fleet-sprint work is running on the member (${found.join('; ')})${stale.length > 0 ? `. ${stale.join('. ')}` : ''}`);
       }
       const idle = found.find(l => l.startsWith('FLEET_SE supervisor '));
       if (idle) {

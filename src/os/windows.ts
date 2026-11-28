@@ -2,7 +2,7 @@ import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId, FLEET_TASK_PROMPT_FILE, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, FLEET_TASK_PROMPT_FILE, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord, gitResetParamWords } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
@@ -70,6 +70,30 @@ export function wrapPowerShellEncoded(psScript: string): string {
   const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
   const encoded = Buffer.from(guarded, 'utf16le').toString('base64');
   return `powershell -EncodedCommand ${encoded}`;
+}
+
+/**
+ * PowerShell: remove from the global key `keyLiteral` (the key text, already
+ * '-doubled for a single-quoted literal) ONLY the value equal to `valueExpr`
+ * (a PowerShell expression) -- fleet's legacy helper path -- then the empty
+ * reset entry when no non-empty value is left. Any other value stays. Values
+ * are counted, never echoed. Ends with exit code 0 and one FLEET_LEGACY_HELPER
+ * line. The PowerShell counterpart of posixLegacyHelperUnset (linux.ts).
+ */
+export function powershellLegacyHelperUnset(keyLiteral: string, valueExpr: string): string {
+  return `$fk = '${keyLiteral}'; $fv = ${valueExpr}; `
+    + `$fall = @(git config --global --get-all $fk 2>$null); `
+    + `$fn = @($fall | Where-Object { $_ -ceq $fv }).Count; `
+    + `if ($fn -gt 0) { `
+    + `$fre = '^' + ($fv -replace '([\\[\\]\\\\.*^$+?(){}|])','\\$1') + '$'; `
+    + `git config --global --unset-all $fk $fre 2>$null; `
+    + `if ($LASTEXITCODE -eq 0) { `
+    + `$fkept = @(git config --global --get-all $fk 2>$null | Where-Object { $_ -ne '' }).Count; $fr = 0; `
+    + `if ($fkept -eq 0) { git config --global --unset-all $fk '^$' 2>$null; if ($LASTEXITCODE -eq 0) { $fr = 1 } }; `
+    + `"FLEET_LEGACY_HELPER removed=$fn kept=$fkept reset_removed=$fr" `
+    + `} else { 'FLEET_LEGACY_HELPER failed=1' } `
+    + `} else { $fkept = @($fall | Where-Object { $_ -ne '' }).Count; "FLEET_LEGACY_HELPER removed=0 kept=$fkept reset_removed=0" }; `
+    + `$global:LASTEXITCODE = 0`;
 }
 
 // The member's own fleet bin dir, APPENDED (see linux.ts FLEET_BIN_PATH_POSIX).
@@ -421,24 +445,15 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     // value is left; any other value stays. Values are counted, never echoed.
     // Always ends with exit code 0 and one FLEET_LEGACY_HELPER line.
     return `Remove-Item -LiteralPath "$env:USERPROFILE\\${stem}.bat" -Force -ErrorAction SilentlyContinue; `
-      + `$fk = '${key}'; $fv = ($env:USERPROFILE -replace '\\\\','/') + '/${stem}.bat'; `
-      + `$fall = @(git config --global --get-all $fk 2>$null); `
-      + `$fn = @($fall | Where-Object { $_ -ceq $fv }).Count; `
-      + `if ($fn -gt 0) { `
-      + `$fre = '^' + ($fv -replace '([\\[\\]\\\\.*^$+?(){}|])','\\$1') + '$'; `
-      + `git config --global --unset-all $fk $fre 2>$null; `
-      + `if ($LASTEXITCODE -eq 0) { `
-      + `$fkept = @(git config --global --get-all $fk 2>$null | Where-Object { $_ -ne '' }).Count; $fr = 0; `
-      + `if ($fkept -eq 0) { git config --global --unset-all $fk '^$' 2>$null; if ($LASTEXITCODE -eq 0) { $fr = 1 } }; `
-      + `"FLEET_LEGACY_HELPER removed=$fn kept=$fkept reset_removed=$fr" `
-      + `} else { 'FLEET_LEGACY_HELPER failed=1' } `
-      + `} else { $fkept = @($fall | Where-Object { $_ -ne '' }).Count; "FLEET_LEGACY_HELPER removed=0 kept=$fkept reset_removed=0" }; `
-      + `$global:LASTEXITCODE = 0`;
+      + powershellLegacyHelperUnset(key, `($env:USERPROFILE -replace '\\\\','/') + '/${stem}.bat'`);
   }
 
-  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string, resetScopes?: string[]): string {
     const groups = groupGitCredentialHelpers(helpers, memberId);
-    if (groups.length === 0) return '';
+    const resets = gitResetParamWords(resetScopes);
+    if (groups.length === 0) {
+      return resets.length === 0 ? '' : `$env:GIT_CONFIG_PARAMETERS = "${resets.join(' ')}"; `;
+    }
     // GIT_CONFIG_PARAMETERS (not GIT_CONFIG_COUNT/KEY/VALUE): PowerShell and
     // .NET DELETE a variable assigned an empty string, so the empty value that
     // resets git's inherited helper list cannot be an env var of its own --
@@ -447,7 +462,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     // (see gitHelperParamWord) so an apostrophe or a space in it works. Scopes
     // and file names are validated to a charset needing no escaping inside a
     // PowerShell double-quoted string.
-    const words: string[] = [];
+    const words: string[] = [...resets];
     for (const g of groups) {
       words.push(`'credential.${g.scopeUrl}.helper='`);
       for (const stem of g.stems) words.push(gitHelperParamWord(g.scopeUrl, '$($fleetGitH)', `${stem}.bat`));

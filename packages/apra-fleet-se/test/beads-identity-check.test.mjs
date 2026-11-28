@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_IDENTITY_PROBE_TIMEOUT_S, BEADS_IDENTITY_WARNING_PREFIX, BEADS_SETUP_COMMANDS, BEADS_SETUP_TIMEOUT_S, BEADS_READING_ROLES, BEADS_WORKSPACE_CONFIG_FILE, BEADS_LOCAL_CONFIG_FILE, BEADS_TREE_COMMANDS, beadsLocalSyncRemoteLine, setupMemberBeads, verifyPinnedToolVersions } from '../fleet-sprint/beads-identity-check.mjs';
 import { BEADS_CONFLICTED_PULL_FIXED_IN, bdConflictedPullAffected } from '../fleet-sprint/tool-version-pin.mjs';
 import { BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion } from '../fleet-sprint/tool-version-pin.mjs';
+import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
+import { fleetDoltVersionCommand } from '../fleet-sprint/dolt-settle.mjs';
 import { noteMemberCommand } from '../fleet-sprint/dolt-sync.mjs';
 import { isBeadsMutatingCommand } from '../fleet-sprint/beads-scope.mjs';
 import { BEADS_IDENTITY_PROBES } from '../fleet-sprint/beads-identity.mjs';
@@ -1038,5 +1040,54 @@ describe('verifyBeadsIdentity: bd/dolt version pin (checkToolVersions)', () => {
         const { command } = fakeCommand({ a: versionAnswers(), b: versionAnswers({ dolt: { fail: "dolt : The term 'dolt' is not recognized as the name of a cmdlet, function, script file, or operable program." } }) });
         const found = await verifyPinnedToolVersions({ command, members: ['a', 'b', 'a'] });
         assert.deepEqual(found, { a: { bd: BEADS_VERSION, dolt: PIN_DOLT }, b: { bd: BEADS_VERSION, dolt: null } });
+    });
+});
+
+describe('verifyPinnedToolVersions: fleet-owned dolt vs a shadowing PATH dolt', () => {
+    const posixShell = getSeCommands({ os: 'linux', shell: '' });
+    const psShell = getSeCommands({ os: 'windows', shell: '' });
+    const fleetProbe = fleetDoltVersionCommand(posixShell);
+    const memberShell = async () => posixShell;
+
+    test('fleet dolt pinned + older PATH dolt: resolves and logs a shadowing warning naming both versions', async () => {
+        const { command } = fakeCommand({ m1: { ...versionAnswers({ dolt: 'dolt version 2.1.9' }), [fleetProbe]: `dolt version ${PIN_DOLT}` } });
+        const logs = [];
+        const found = await verifyPinnedToolVersions({ command, members: ['m1'], log: (l) => logs.push(l), memberShell });
+        assert.equal(found.m1.dolt, PIN_DOLT);
+        const warn = logs.filter((l) => l.includes(BEADS_IDENTITY_WARNING_PREFIX) && l.includes('PATH'));
+        assert.equal(warn.length, 1, JSON.stringify(logs));
+        assert.ok(warn[0].includes('2.1.9') && warn[0].includes(PIN_DOLT) && warn[0].includes("'m1'"), warn[0]);
+    });
+
+    test('fleet dolt at a wrong minor: VERSION_MISMATCH naming the member', async () => {
+        const { command } = fakeCommand({ m1: { ...versionAnswers(), [fleetProbe]: 'dolt version 2.1.9' } });
+        await assert.rejects(
+            verifyPinnedToolVersions({ command, members: ['m1'], memberShell }),
+            (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH && err.member === 'm1' && /dolt 2\.1\.9/.test(err.message),
+        );
+    });
+
+    test('no fleet-owned dolt: behaves as before (PATH dolt compared; absent dolt logged as installed on demand)', async () => {
+        const missing = { fail: 'bash: dolt: command not found' };
+        const { command } = fakeCommand({
+            old: { ...versionAnswers({ dolt: 'dolt version 2.1.9' }), [fleetProbe]: missing },
+            none: { ...versionAnswers({ dolt: missing }), [fleetProbe]: missing },
+        });
+        await assert.rejects(
+            verifyPinnedToolVersions({ command, members: ['old'], memberShell }),
+            (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH && err.member === 'old',
+        );
+        const logs = [];
+        const found = await verifyPinnedToolVersions({ command, members: ['none'], log: (l) => logs.push(l), memberShell });
+        assert.equal(found.none.dolt, null);
+        assert.ok(logs.some((l) => /no dolt on PATH.*on demand/.test(l)), JSON.stringify(logs));
+    });
+
+    test('the fleet dolt probe is built per member OS/shell: PowerShell gets the call operator and USERPROFILE, POSIX a plain quoted $HOME path', () => {
+        const ps = fleetDoltVersionCommand(psShell);
+        const px = fleetDoltVersionCommand(posixShell);
+        assert.match(ps, /^& "/);
+        assert.ok(ps.includes('dolt.exe') && !ps.includes('$HOME'), ps);
+        assert.ok(!px.startsWith('&') && px.endsWith('dolt" version') && !px.includes('.exe'), px);
     });
 });

@@ -8,6 +8,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { listVcsCredentials } from '../services/vcs-credential-record.js';
 import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
 import type { Agent } from '../types.js';
+import { redactSecret, TOKEN_REDACTION } from '../utils/redact-secret.js';
 
 /**
  * Server-side VCS credential handoff (apra-fleet-3swo.7.3).
@@ -194,7 +195,6 @@ export interface VcsCredentialExecResult {
   structuredContent: VcsCredentialExecStructured;
 }
 
-const TOKEN_REDACTION = '[REDACTED:vcs_token]';
 /**
  * Distinct from TOKEN_REDACTION on purpose: a reader of a redacted stream
  * needs to know WHICH half of the basic-auth pair was scrubbed out of it.
@@ -219,13 +219,6 @@ function execResult(
       memberName: fields.memberName ?? null,
     },
   };
-}
-
-/** Replace every occurrence of `secret` in `output`, and report how many. */
-function redactSecret(output: string, secret: string, marker: string): { text: string; count: number } {
-  if (!secret) return { text: output, count: 0 };
-  const parts = output.split(secret);
-  return { text: parts.join(marker), count: parts.length - 1 };
 }
 
 export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<VcsCredentialExecResult> {

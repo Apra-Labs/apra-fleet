@@ -27,7 +27,7 @@ import {
 import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaude } from './agent-transform.js';
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
-import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+import { downloadAndExtractDolt, verifyDolt, probePathDolt } from './dolt-install.js';
 import { installBeads, beadsMismatchLines, beadsLinkLossWarning, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
 import { DOLT_VERSION } from './dolt-install.js';
 import { checkPinnedVersion } from './version-pin.js';
@@ -67,8 +67,9 @@ import {
 export interface DoltStepDeps {
   downloadAndExtractDolt: typeof downloadAndExtractDolt;
   verifyDolt: typeof verifyDolt;
+  probePathDolt: typeof probePathDolt;
 }
-const realDoltStepDeps: DoltStepDeps = { downloadAndExtractDolt, verifyDolt };
+const realDoltStepDeps: DoltStepDeps = { downloadAndExtractDolt, verifyDolt, probePathDolt };
 let doltStepDeps: DoltStepDeps = realDoltStepDeps;
 /** Test-only: inject fakes for the dolt CLI install step's download/verify calls. */
 export function _setDoltStepDeps(overrides: Partial<DoltStepDeps>): void {
@@ -2281,6 +2282,15 @@ ${manualStopHint(pidsAfterStop)}
         const check = checkPinnedVersion(result.version, DOLT_VERSION);
         if (!check.ok) throw new Error(`the downloaded dolt reports ${check.found}, expected ${check.expected}`);
         doltVersion = result.version;
+      }
+      // A different dolt earlier on PATH than the fleet-owned one: only reported
+      // (never modified), like a PATH bd outside the pin.
+      const shadow = doltStepDeps.probePathDolt(doltPath);
+      if (shadow && !checkPinnedVersion(shadow.version, DOLT_VERSION).ok) {
+        const shadowFix = `remove or update ${shadow.location} (it is not fleet-owned and is left untouched), or put ${BIN_DIR} first on PATH`;
+        console.warn(`  [!] Dolt on PATH differs from the fleet-owned dolt on ${installHostName()}: ${shadow.location} reports ${shadow.version}; ${doltPath} reports ${doltVersion} (pinned).`);
+        console.warn(`  [!] Fix: ${shadowFix}`);
+        doltVersion = `${doltVersion} (WARNING: PATH dolt ${shadow.version} at ${shadow.location} shadows it. Fix: ${shadowFix})`;
       }
     } catch (err) {
       const why = (err as Error).message;

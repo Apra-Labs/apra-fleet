@@ -36,7 +36,11 @@ Usage:
   apra-fleet auth --oauth --member <name> secret.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secret.<name>  Resolve API key from persistent credential store
-  apra-fleet kb directives                             List pending + active user-directives
+  apra-fleet operator-auth github [--label <l>] [--access <level>] [--repos o/n,...]  Give host git a self-refreshing GitHub App token (see 'operator-auth --help')
+  apra-fleet operator-auth github --remove [--label <l>]  Undo operator-auth github
+  apra-fleet operator-auth exec [--label <l>] -- <cmd> [args]  Run <cmd> (e.g. gh) with a fresh GH_TOKEN in its env only
+  apra-fleet git-credential [--label <l>] get     git credential helper registered by operator-auth github
+  apra-fleet kb directives                            List pending + active user-directives
   apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
   apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
   apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)

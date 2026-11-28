@@ -459,3 +459,42 @@ export async function verifyDolt(
     }
   }
 }
+
+/** Upper bound for each PATH dolt probe call (locate, then `version`). */
+const PATH_DOLT_PROBE_TIMEOUT_MS = 15_000;
+
+export interface PathDoltProbe {
+  location: string;
+  version: string;
+}
+
+/**
+ * Finds the first dolt that resolves on PATH other than `fleetDoltPath` (the
+ * fleet-owned BIN_DIR copy) and reads its version. Read-only: the PATH copy
+ * is never modified. Returns null when no other dolt is on PATH or it cannot
+ * report a version. Best-effort, never throws.
+ */
+export function probePathDolt(
+  fleetDoltPath: string,
+  exec: (file: string, args: string[]) => string = (file, args) =>
+    execFileSync(file, args, {
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      shell: false,
+      windowsHide: true,
+      timeout: PATH_DOLT_PROBE_TIMEOUT_MS,
+    }) as string,
+): PathDoltProbe | null {
+  const norm = (p: string) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+  try {
+    const listed = exec(process.platform === 'win32' ? 'where' : 'which', process.platform === 'win32' ? ['dolt'] : ['-a', 'dolt']);
+    const candidates = listed.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const other = candidates.find((c) => norm(c) !== norm(fleetDoltPath));
+    if (!other) return null;
+    const out = exec(other, ['version']);
+    const m = out.match(/(\d+\.\d+\.\d+\S*)/);
+    return m ? { location: other, version: m[1] } : null;
+  } catch {
+    return null;
+  }
+}

@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { encryptPassword } from '../src/utils/crypto.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
-import { executePrompt, inFlightAgents, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
+import { executePrompt, buildFailureMessage, inFlightAgents, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { getStallDetector } from '../src/services/stall/index.js';
 import { setStoredPid, clearStoredPid, getStoredPid, getAgentOS } from '../src/utils/agent-helpers.js';
 import { writeStatusline } from '../src/services/statusline.js';
@@ -186,6 +186,16 @@ describe('executePrompt', () => {
     expect(resultText(result)).toContain('provision_llm_auth');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+
+  it('buildFailureMessage: an auth-classified failure yields the member-kind wording', () => {
+    const provider = { classifyError: () => 'auth' } as any;
+    const result = { stdout: '', stderr: 'Not logged in', code: 1 } as any;
+    const local = buildFailureMessage('m-local', 'local', result, provider);
+    expect(local).toContain('interactively');
+    expect(local).toContain('on this host');
+    expect(local).not.toContain('provision_llm_auth');
+    expect(buildFailureMessage('m-remote', 'remote', result, provider)).toContain('provision_llm_auth');
   });
 
   it('retries on server error after 5s delay and returns recovered result', async () => {
