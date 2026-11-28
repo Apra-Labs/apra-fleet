@@ -195,7 +195,8 @@ describe('member-host driver --plan', () => {
     for (const x of plan()) {
       const refusing = x.id === 'RFS' || x.id === 'RBS';
       expect(x.refusalWithoutDestructiveChange, x.id).toBe(refusing);
-      expect(x.refusalCode, x.id).toBe(refusing ? 'E-FLEET-SE-RUNNING' : null);
+      // RFS: replace-full's refusal reason (update_member); RBS: the release install guard's code.
+      expect(x.refusalCode, x.id).toBe(x.id === 'RFS' ? 'fleet-se-running' : x.id === 'RBS' ? 'E-FLEET-SE-RUNNING' : null);
       if (refusing) expect(x.expected).toMatch(/no destructive change/);
     }
   });

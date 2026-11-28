@@ -18,6 +18,7 @@
  * memberCall passes it only when calling as a repository's kb_maintainer.
  */
 import fs from 'node:fs';
+import { serverVersion } from '../version.js';
 
 const USAGE = `apra-fleet call -- call a tool as a registered member session
 
@@ -99,6 +100,21 @@ function requiredArgs(list: unknown, tool: string): string[] {
   return Array.isArray(req) ? req.map(String) : [];
 }
 
+/**
+ * Options for the client's connectFleetMember. origin=engine: this verb is the
+ * engine acting as the member (remote memberCall), so its kb_/code_ calls are
+ * not counted in session_stats. expectedVersion: this binary's own version, so
+ * a client auto-start (server down) can match the binary to start. Without it
+ * the client looks for a version.json / workflows/.installed.json near itself,
+ * which a SEA member install (--workflows none) does not have, and refuses
+ * with AUTOSTART_VERSION_UNKNOWN.
+ */
+export function memberConnectOptions(kbMaintainer: boolean, version: string = serverVersion): {
+  origin: 'engine'; kbMaintainer?: true; expectedVersion: string;
+} {
+  return { origin: 'engine', ...(kbMaintainer ? { kbMaintainer: true as const } : {}), expectedVersion: version };
+}
+
 /** Returns the process exit code. */
 export async function runCall(argv: string[], deps: CallDeps = {}): Promise<number> {
   const io: CallIo = deps.io ?? { out: t => console.log(t), err: t => console.error(t) };
@@ -133,9 +149,7 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
 
   const connect = deps.connect ?? (async (id: string, opts: { kbMaintainer: boolean }) => {
     const m = await import('@apralabs/apra-fleet-client/server-resolution');
-    // origin=engine: this verb is the engine acting as the member (remote
-    // memberCall), so its kb_/code_ calls are not counted in session_stats.
-    return m.connectFleetMember(id, { origin: 'engine', ...(opts.kbMaintainer ? { kbMaintainer: true } : {}) });
+    return m.connectFleetMember(id, memberConnectOptions(opts.kbMaintainer));
   });
 
   let session;
