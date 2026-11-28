@@ -8,7 +8,7 @@
  *
  *   FLEET_SE_CHECK ok
  *   FLEET_SE supervisor pid=<pid> port=<port>
- *   FLEET_SE sprint pid=<pid> [id=<sprintId>]
+ *   FLEET_SE sprint pid=<pid> [id=<sprintId>] [unverified]
  */
 import { detectRunningFleetSe } from './fleet-se-guard.js';
 
@@ -22,6 +22,6 @@ export async function runFleetSeCheck(): Promise<void> {
   }
   console.log('FLEET_SE_CHECK ok');
   if (found.supervisor) console.log(`FLEET_SE supervisor pid=${found.supervisor.pid} port=${found.supervisor.port}`);
-  for (const s of found.sprints) console.log(`FLEET_SE sprint pid=${s.pid}${s.sprintId ? ` id=${s.sprintId}` : ''}`);
+  for (const s of found.sprints) console.log(`FLEET_SE sprint pid=${s.pid}${s.sprintId ? ` id=${s.sprintId}` : ''}${s.unverified ? ' unverified' : ''}`);
   for (const w of found.warnings ?? []) console.log(`FLEET_SE warning ${w}`);
 }

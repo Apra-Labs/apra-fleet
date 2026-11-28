@@ -72,10 +72,29 @@ describe('detectRunningFleetSe', () => {
     expect(r.warnings).toEqual([]);
   });
 
-  it('an unreadable command line fails open: lock skipped with a warning', async () => {
+  it('an unreadable command line of a live lock pid fails closed: an unverified running sprint', async () => {
     const r = await detectRunningFleetSe(fakeProbes({ locks: { 'a.lock': '111' }, alive: [111], cmd: { 111: null } }));
+    expect(r.sprints).toEqual([{ pid: 111, lockFile: path.join(LOCK_DIR, 'a.lock'), unverified: true }]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('a dead lock pid is skipped without reading its command line (stale lock path unchanged)', async () => {
+    const commandLine = vi.fn(() => null);
+    const r = await detectRunningFleetSe({ ...fakeProbes({ locks: { 'a.lock': '111' }, alive: [] }), commandLine });
     expect(r.sprints).toEqual([]);
-    expect(r.warnings?.[0]).toContain('could not read the command line of pid 111');
+    expect(commandLine).not.toHaveBeenCalled();
+  });
+
+  it('an unverified lock pid that the supervisor names as its sprint child is verified', async () => {
+    const r = await detectRunningFleetSe(fakeProbes({
+      locks: { 'x.lock': '700' },
+      alive: [500, 700],
+      cmd: { 700: null },
+      health: { 8787: SUPERVISOR_HEALTH },
+      sprints: { 8787: { sprints: [{ sprintId: 'sprint-1', childPid: 700 }] } },
+    }));
+    expect(r.sprints).toEqual([{ pid: 700, lockFile: path.join(LOCK_DIR, 'x.lock'), sprintId: 'sprint-1' }]);
+    expect(r.sprints[0]).not.toHaveProperty('unverified');
   });
 
   it('a lock holding our own pid is skipped', async () => {
@@ -305,10 +324,25 @@ describe('runInstall running fleet-sprint guard', () => {
     expect(vi.mocked(fs.unlinkSync).mock.calls.some(c => String(c[0]).endsWith('service-notice.json'))).toBe(false);
   });
 
-  it('detection warnings (unverifiable lock pid) are printed and the install proceeds', async () => {
+  it('a live lock pid whose command line cannot be read refuses (fail closed), naming the pid and lock file', async () => {
     _setFleetSeProbes(fakeProbes({ locks: { 'a.lock': '111' }, alive: [111], cmd: { 111: null } }));
-    await runInstall([]).catch(() => {});
-    expect(vi.mocked(console.warn).mock.calls.map(c => c.join(' ')).join('\n')).toContain('WARNING: could not read the command line of pid 111');
+    await expect(runInstall([])).rejects.toThrow('process.exit(1)');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const text = errors();
+    expect(text).toContain('E-FLEET-SE-RUNNING');
+    expect(text).toContain('possible fleet-sprint run: pid 111');
+    expect(text).toContain('pid 111 is alive but its command line could not be read');
+    expect(text).toContain(`delete the lock file ${path.join(LOCK_DIR, 'a.lock')}`);
+    expect(text).toContain('--ignore-running-sprints');
+    expect(fs.copyFileSync).not.toHaveBeenCalled();
+    expect(/^[\x00-\x7F]*$/.test(text)).toBe(true);
+  });
+
+  it('--ignore-running-sprints still bypasses an unverifiable lock pid', async () => {
+    const commandLine = vi.fn(() => null);
+    _setFleetSeProbes({ ...fakeProbes({ locks: { 'a.lock': '111' }, alive: [111] }), commandLine });
+    await runInstall(['--ignore-running-sprints']).catch(() => {});
+    expect(commandLine).not.toHaveBeenCalled();
     expect(errors()).not.toContain('E-FLEET-SE-RUNNING');
   });
 
