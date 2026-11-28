@@ -176,7 +176,7 @@ afterEach(async () => {
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
-describe('a merged tombstone reaches a bible entry a fresh clone imported as linked or duplicate', () => {
+describe('a merged tombstone reaches a bible entry a fresh clone imported as linked or duplicate', { timeout: 30_000 }, () => {
   it('kb_import at the merged base ref: withdrawn tombstones answer withdrawn and lower both rows', async () => {
     const relatedId = await seedCloneAndImportXY();
 

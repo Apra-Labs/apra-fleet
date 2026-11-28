@@ -72,13 +72,18 @@ async function bootSupervisor(extraEnv = {}) {
     child.stdout.on('data', (c) => { out += c; });
     child.stderr.on('data', (c) => { out += c; });
     const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal, at: Date.now() })));
+    // 'exit' can fire before the piped stdout/stderr are fully drained (seen on
+    // Windows), so the last log line may not be in `out` yet. 'close' fires once
+    // the streams end; bound the wait in case a grandchild holds the pipes.
+    const closed = new Promise((resolve) => child.once('close', resolve));
+    const settledOutput = async () => { await Promise.race([closed, sleep(3000)]); return out; };
     const deadline = Date.now() + scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
     for (;;) {
         try { if ((await request(port, '/api/health')).status === 200) break; } catch { /* not up yet */ }
         if (Date.now() > deadline) throw new Error(`supervisor did not come up; output:\n${out}`);
         await sleep(100);
     }
-    return { child, port, exited, output: () => out };
+    return { child, port, exited, output: () => out, settledOutput };
 }
 
 describe('supervisor process exit after POST /api/shutdown', () => {
@@ -92,7 +97,7 @@ describe('supervisor process exit after POST /api/shutdown', () => {
         assert.equal(ex.code, 0, sup.output());
         assert.ok(ex.at - respondedAt <= 10_000);
         await assert.rejects(request(sup.port, '/api/health'), 'port should be closed after exit');
-        assert.match(sup.output(), /\[supervisor\] exiting \(code 0\)/);
+        assert.match(await sup.settledOutput(), /\[supervisor\] exiting \(code 0\)/);
     });
 
     test('hung seam: still exits within the forced-exit bound and the log names the seam', async () => {
@@ -105,6 +110,6 @@ describe('supervisor process exit after POST /api/shutdown', () => {
         const ex = await Promise.race([sup.exited, sleep(10_000).then(() => null)]);
         assert.ok(ex, `process did not exit within 10s with a hung seam; output:\n${sup.output()}`);
         assert.equal(ex.code, 0, sup.output());
-        assert.match(sup.output(), /dashboard did not stop within 500ms \(hung\)/);
+        assert.match(await sup.settledOutput(), /dashboard did not stop within 500ms \(hung\)/);
     });
 });
