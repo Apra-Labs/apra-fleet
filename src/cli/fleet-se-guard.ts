@@ -24,8 +24,10 @@
  *     sprint. isPidAlive() is false on EPERM, so another user's sprints in a
  *     shared /tmp do not count. A lock left behind by a killed run can name a
  *     pid since reused by an unrelated process, so the pid's command line must
- *     also look like a fleet-sprint run; when it cannot be read the lock is
- *     skipped with a WARNING (fail open).
+ *     also look like a fleet-sprint run. When it cannot be read (e.g. CIM
+ *     "Access denied" for a key-auth SSH user on Windows) the live pid is
+ *     treated as a running sprint, marked unverified (fail closed): the
+ *     refusal names the pid and the lock file to delete if it is stale.
  *   - supervisor: GET /api/health on the default port 8787 and on the port the
  *     supervisor last logged in <FLEET_SE_DATA_DIR or ~/.apra-fleet-se>/logs/
  *     supervisor.log; a 200 with status ok + seams + a live pid is the
@@ -44,7 +46,11 @@ export const IGNORE_RUNNING_SPRINTS_FLAG = '--ignore-running-sprints';
 export const DEFAULT_SUPERVISOR_PORT = 8787;
 
 export interface RunningSupervisor { pid: number; port: number }
-export interface RunningSprint { pid: number; sprintId?: string; lockFile?: string }
+export interface RunningSprint {
+  pid: number; sprintId?: string; lockFile?: string;
+  /** Live lock pid whose command line could not be read: refused, not proven a sprint. */
+  unverified?: boolean;
+}
 export interface RunningFleetSe {
   supervisor: RunningSupervisor | null;
   sprints: RunningSprint[];
@@ -136,7 +142,10 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
     if (!Number.isInteger(pid) || pid <= 0 || pid === probes.selfPid() || !probes.isPidAlive(pid)) continue;
     const cmd = probes.commandLine(pid);
     if (cmd === null) {
-      warnings.push(`could not read the command line of pid ${pid} (sprint lock ${lockFile}), so it is not treated as a running sprint. If it is one, stop it before upgrading.`);
+      // It may have exited between the two probes: then it is a stale lock.
+      if (!probes.isPidAlive(pid)) continue;
+      // Fail closed: a live pid we cannot identify may be a sprint.
+      sprints.set(pid, { pid, lockFile, unverified: true });
       continue;
     }
     // Otherwise a stale lock whose pid was reused by an unrelated process.
@@ -158,7 +167,9 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
     for (const s of list?.sprints ?? []) {
       if (typeof s.childPid !== 'number' || !probes.isPidAlive(s.childPid)) continue;
       const sprintId = typeof s.sprintId === 'string' ? s.sprintId : undefined;
-      sprints.set(s.childPid, { ...sprints.get(s.childPid), pid: s.childPid, sprintId });
+      // The supervisor naming this pid as its child verifies it as a sprint.
+      const { unverified: _unverified, ...prev } = sprints.get(s.childPid) ?? { pid: s.childPid };
+      sprints.set(s.childPid, { ...prev, pid: s.childPid, sprintId });
     }
     break;
   }
@@ -192,8 +203,13 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
   const running: string[] = [];
   if (sup) running.push(`  - fleet-sprint supervisor: pid ${sup.pid}, ${base}`);
   for (const s of found.sprints) {
-    const what = s.sprintId ? `sprint ${s.sprintId}` : 'fleet-sprint run';
+    const what = s.sprintId ? `sprint ${s.sprintId}` : s.unverified ? 'possible fleet-sprint run' : 'fleet-sprint run';
     running.push(`  - ${what}: pid ${s.pid}${s.lockFile ? ` (lock file ${s.lockFile})` : ''}`);
+    if (s.unverified && !s.sprintId) {
+      running.push(`      pid ${s.pid} is alive but its command line could not be read, so it cannot be ruled out`);
+      running.push('      as a sprint. Stop that process, or, if it is not a fleet-sprint (a stale lock whose pid');
+      running.push(`      was reused), delete the lock file ${s.lockFile ?? '(none recorded)'} and re-run.`);
+    }
   }
   const steps: string[] = [];
   if (found.sprints.length > 0) {
