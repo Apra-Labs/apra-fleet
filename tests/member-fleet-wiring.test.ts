@@ -772,7 +772,11 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     __setMemberFleetMcpDeps(d);
     const a = remoteMember({ llmProvider: 'agy' });
     const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(result).toContain('fleetMcp: unavailable (no-per-project-mcp)');
+    // An explicit fleet_install that installs nothing fails the call (isError),
+    // still naming the fleetMcp status.
+    const r = result as { isError: boolean; text: string };
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('fleetMcp: unavailable (no-per-project-mcp)');
     expect(called).toBe(false);
   });
 });
