@@ -36,7 +36,7 @@ test('McpClient.request rejects with .code=TIMEOUT when the transport never repl
     const transport = new BlackHoleTransport();
     const client = new McpClient(transport);
 
-    const start = Date.now();
+    const start = performance.now();
     await assert.rejects(
         client.request('never_replies', {}, { timeoutMs: 50 }),
         (err) => {
@@ -44,8 +44,11 @@ test('McpClient.request rejects with .code=TIMEOUT when the transport never repl
             return true;
         }
     );
-    const elapsed = Date.now() - start;
-    assert.ok(elapsed >= 50, `expected to wait at least 50ms, waited ${elapsed}ms`);
+    const elapsed = performance.now() - start;
+    // Node timers can fire ~1ms early relative to the clock; allow 5ms slack
+    // while still proving the request waited for the timeout (not an
+    // immediate rejection).
+    assert.ok(elapsed >= 45, `expected to wait about 50ms, waited ${elapsed}ms`);
     assert.strictEqual(client.pendingRequests.size, 0);
 });
 
