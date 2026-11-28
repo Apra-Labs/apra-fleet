@@ -32,7 +32,7 @@ import {
   supervisorCopyCommand, supervisorDiagCommand, gitBashPath,
 } from './lib/commands.mjs';
 import {
-  PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline, toolListKeyline, namedServerLog, serverLogCrashed,
+  PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline, toolListKeyline, namedServerLog, serverLogCrashed, taskRunState,
   SERVER_NOT_STARTED, SERVER_CRASHED,
 } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
@@ -279,18 +279,27 @@ async function realRun(o) {
         let toolsKey = toolListKeyline(t.exitCode, t.exitCode === 0 ? t.stdout : out(t), candVersion);
         if (toolsKey === SERVER_NOT_STARTED) {
           // The signature alone cannot tell the gap from a member server that
-          // crashed on start: read the server log the error names (absent =
-          // the server never ran) and the service log. A crash is never excused.
+          // crashed on start. The gap means the task never ran its action, so:
+          // the task's Last Result must be a never-ran code (a run that ended
+          // or is still running is not the gap), and neither the log the error
+          // names (the newest fleet-<pid>.log of ANY process, often the start
+          // CLI's own) nor data/fleet.log (where the task wrapper appends the
+          // server's stderr) may show a crash. A crash is never excused.
+          const sd = await exec(serviceDiagCommand(), 60);
+          const task = taskRunState(sd.stdout);
           const named = namedServerLog(out(t));
           const logs = [named ? gitBashPath(named) : null, `${MH}/data/fleet.log`].filter(Boolean);
           const l = await exec(logs.map(f => `echo "== ${f}"; tail -n 200 "${f}" 2>&1`).join('; ') + '; exit 0', 60);
-          if (l.exitCode !== 0 || serverLogCrashed(l.stdout)) toolsKey = SERVER_CRASHED;
+          const crashed = l.exitCode !== 0 || serverLogCrashed(l.stdout);
+          if (crashed || task.state === 'exited' || task.state === 'running') toolsKey = SERVER_CRASHED;
           const lt = await exec(logs.map(f => `echo "== ${f}"; tail -n 12 "${f}" 2>&1`).join('; ') + '; exit 0', 60);
-          notes.push(`RF rf-tools ${toolsKey}: server logs (last lines): ${diagLine(out(lt), 2500)}`);
+          notes.push(`RF rf-tools ${toolsKey}: task Last Result ${task.code ?? 'unreadable'} (${task.state}); crash in the logs: ${crashed ? 'yes' : 'no'}`);
+          notes.push(`service diag (RF, after the candidate member install): ${diagLine(sd.stdout)}`);
+          notes.push(`RF rf-tools server logs (last lines): ${diagLine(out(lt), 2500)}`);
         }
         rec('RF', 'rf-tools', 'call --list-tools', t.exitCode, toolsKey, tail(out(t)));
-        // Task state and Last Result go to the notes.
-        if (toolsKey !== 'TOOLS-OK') await serviceDiag('RF, after the candidate member install');
+        // The gap path above already recorded the service diag.
+        if (toolsKey === 'TOOLS-WRONG') await serviceDiag('RF, after the candidate member install');
       } else if (pass === 'RFS') {
         if (!baseline.tag || !baseline.asset) throw new Error('no usable release baseline');
         await installBaselineOnMember(pass);

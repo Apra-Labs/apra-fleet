@@ -4,9 +4,11 @@
 // The fleet's replace-full (src/services/member-fleet-install.ts
 // buildReplaceFullInstallPlan) backs up into
 // <home>/.apra-fleet-replace-backup-<stamp>/ holding data/, fleet.key and the
-// OLD binary. The documented Rollback (docs/install.md) is: uninstall the
-// member install, restore data/ and fleet.key from the backup, reinstall the
-// previous version from the backup's binary. Every member command here is a
+// OLD binary, and moves the old data/ to <home>/.apra-fleet/data.replaced-<stamp>.
+// The documented Rollback (docs/install.md) is: uninstall the member install,
+// put the old data back (the aside copy; data/ kept if never moved; the
+// backup's only when neither exists), restore fleet.key only if missing,
+// reinstall the previous version from the backup's binary. Every member command here is a
 // bash string for the Git Bash member shell.
 
 import { TRANSIENT_DATA_FILES, stateListing } from './scenarios.mjs';
@@ -52,23 +54,29 @@ export function guardedReinstallCommand(backupDir) {
   return `chmod +x '${b}/apra-fleet.exe' && '${b}/apra-fleet.exe' install --llm ${MEMBER_PROVIDER} --force`;
 }
 
+/** Where replace-full moved the old data/ (`<home>/.apra-fleet/data.replaced-<stamp>`, the backup's stamp). */
+export function dataAsidePath(backupDir) {
+  const stamp = /\.apra-fleet-replace-backup-([A-Za-z0-9._-]+)$/.exec(assertBackup(backupDir))[1];
+  return `${MEMBER_FLEET_DIR}/data.replaced-${stamp}`;
+}
+
 /**
- * The full documented rollback, every step gated on the previous one (&&), so
- * the first failing step fails the command and nothing after it runs. Prints
- * ROLLBACK-OK only when every step succeeded.
+ * The full documented rollback (docs/install.md "Rollback", the same as the
+ * product's own plan in buildReplaceFullInstallPlan), every step gated on the
+ * previous one (&&), so the first failing step fails the command and nothing
+ * after it runs. Prints ROLLBACK-OK only when every step succeeded.
+ * - data/: the moved-aside copy when there is one; with none, data/ was never
+ *   moved, so it is kept; the backup's data/ only when neither exists.
+ * - fleet.key: restored from the backup only when the member has none.
  */
 export function rollbackSteps(backupDir) {
   const b = assertBackup(backupDir);
   const mh = MEMBER_FLEET_DIR;
+  const aside = dataAsidePath(b);
   return [
     `"${mh}/bin/apra-fleet.exe" uninstall --force --yes`,
-    `rm -rf "${mh}/data"`,
-    `cp -R '${b}/data' "${mh}/data"`,
-    // fleet.key is created lazily, so the replace-full backup holds one only if
-    // the member had it (the product backup step is conditional the same way).
-    // Present: restore it. Absent: the member had none before replace, so drop
-    // the candidate's -- either way the step succeeds and the chain goes on.
-    `if [ -e '${b}/fleet.key' ]; then cp '${b}/fleet.key' "${mh}/fleet.key"; else rm -f "${mh}/fleet.key"; fi`,
+    `if [ -d "${aside}" ]; then rm -rf "${mh}/data" && mv "${aside}" "${mh}/data"; elif [ ! -d "${mh}/data" ]; then cp -R '${b}/data' "${mh}/data"; fi`,
+    `if [ ! -f "${mh}/fleet.key" ] && [ -f '${b}/fleet.key' ]; then cp '${b}/fleet.key' "${mh}/fleet.key"; fi`,
     guardedReinstallCommand(b),
   ];
 }

@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PASS_IDS, PASSES, REFUSAL_CODE, REPLACE_REFUSAL_REASON, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
-  KNOWN_GAP_MEMBER_SERVER, SERVER_NOT_STARTED, SERVER_CRASHED, toolListKeyline, namedServerLog, serverLogCrashed, predatesGapFix,
+  KNOWN_GAP_MEMBER_SERVER, SERVER_NOT_STARTED, SERVER_CRASHED, toolListKeyline, namedServerLog, serverLogCrashed, predatesGapFix, taskRunState,
 } from './integration/member-host/lib/scenarios.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +15,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildReport } from './integration/member-host/lib/report.mjs';
 import {
-  ROLLBACK_OK, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSteps, rollbackSucceeded,
+  ROLLBACK_OK, dataAsidePath, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSteps, rollbackSucceeded,
 } from './integration/member-host/lib/rollback.mjs';
 import {
   baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY, SUPERVISOR_COPY_DIR, parseFleetSe, idleSupervisorStoppedNote,
@@ -222,11 +222,81 @@ describe('rf-tools classification from the full call --list-tools output', () =>
     expect(serverLogCrashed('{"level":"info","tag":"start","msg":"listening"}')).toBe(false);
   });
 
+  // Captured verbatim from node v22.19.0: `node -e "Promise.reject(new Error('boom'))"`, exit 1.
+  // A throw before the server installs its handlers leaves only this in data/fleet.log.
+  const NODE_UNHANDLED_REJECTION = [
+    '[eval]:1',
+    "Promise.reject(new Error('boom'))",
+    '               ^',
+    '',
+    'Error: boom',
+    '    at [eval]:1:16',
+    '    at runScriptInThisContext (node:internal/vm:209:10)',
+    '    at node:internal/process/execution:446:12',
+    '    at [eval]-wrapper:6:24',
+    '    at runScriptInContext (node:internal/process/execution:444:60)',
+    '    at evalFunction (node:internal/process/execution:279:30)',
+    '    at evalTypeScript (node:internal/process/execution:291:3)',
+    '    at node:internal/main/eval_string:74:3',
+    '',
+    'Node.js v22.19.0',
+    '',
+  ].join('\r\n');
+  // Captured from node v22.19.0: an ESM import of a missing module (path shortened), exit 1.
+  const NODE_MODULE_NOT_FOUND = [
+    'node:internal/modules/esm/resolve:274',
+    '    throw new ERR_MODULE_NOT_FOUND(',
+    '          ^',
+    '',
+    "Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\\x\\does-not-exist-pkg-xyz' imported from C:\\x\\[eval]",
+    '    at finalizeResolution (node:internal/modules/esm/resolve:274:11)',
+    '    at moduleResolve (node:internal/modules/esm/resolve:859:10)',
+    '    at defaultResolve (node:internal/modules/esm/resolve:983:11) {',
+    "  code: 'ERR_MODULE_NOT_FOUND',",
+    "  url: 'file:///C:/x/does-not-exist-pkg-xyz'",
+    '}',
+    '',
+    'Node.js v22.19.0',
+  ].join('\n');
+  // The shape writeLog (src/utils/log-helpers.ts) emits: ts, level, tag, msg; plus its stderr mirror.
+  const startupRecord = JSON.stringify({ ts: '2026-11-27T12:00:00.000+05:30', level: 'error', tag: 'startup', msg: 'port 7523 is held by another user' });
+  const startFailedRecord = JSON.stringify({ ts: '2026-11-27T12:00:00.000+05:30', level: 'error', tag: 'cli', msg: 'Start failed: Server did not start in time' });
+
+  it('a real Node start-up crash (no server record, only the default crash text) is a crash', () => {
+    expect(serverLogCrashed(`== /c/u/.apra-fleet/data/fleet.log\n${NODE_UNHANDLED_REJECTION}`)).toBe(true);
+    expect(serverLogCrashed(NODE_MODULE_NOT_FOUND)).toBe(true);
+    // And what this node prints right now, not just the captured copies.
+    for (const code of ["Promise.reject(new Error('boom'))", "throw new Error('sync boom')"]) {
+      const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8' });
+      expect(r.status).toBe(1);
+      expect(serverLogCrashed(`${r.stdout}${r.stderr}`)).toBe(true);
+    }
+  });
+
+  it('an error-level start-up record is a crash; the start CLI failing at error level (the gap itself) is not', () => {
+    expect(serverLogCrashed(startupRecord)).toBe(true);
+    expect(serverLogCrashed('[fleet:error] startup port 7523 is held by another user')).toBe(true);
+    expect(serverLogCrashed(`${startFailedRecord}\n[fleet:error] cli Start failed: Server did not start in time`)).toBe(false);
+    expect(serverLogCrashed('Server starting via service manager...\nServer did not start in time. Check logs at: C:\\x\\fleet.log')).toBe(false);
+  });
+
+  it('task Last Result: only never-ran codes are the gap; a run that ended (any code) or still runs is not', () => {
+    const diag = (v: string) => `TASK Status: Ready ; Last Run Time: 11/30/1999 12:00:00 AM ; Last Result: ${v} ; Logon Mode: Interactive only`;
+    expect(taskRunState(diag('267011'))).toEqual({ state: 'never-ran', code: 0x41303 });
+    expect(taskRunState(diag('-2147020576')).state).toBe('never-ran'); // 0x800710E0 refused
+    expect(taskRunState(diag('0x80070520')).state).toBe('never-ran');
+    expect(taskRunState(diag('267009')).state).toBe('running');
+    expect(taskRunState(diag('1'))).toEqual({ state: 'exited', code: 1 });
+    expect(taskRunState(diag('0')).state).toBe('exited');
+    expect(taskRunState('TASK ERROR: The system cannot find the file specified.')).toEqual({ state: 'unknown', code: null });
+  });
+
   it('the driver classifies from the full output, reads the named log before excusing, and warns loudly', () => {
     const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
     expect(src).toMatch(/toolListKeyline\(t\.exitCode, t\.exitCode === 0 \? t\.stdout : out\(t\), candVersion\)/);
-    expect(src).toMatch(/if \(l\.exitCode !== 0 \|\| serverLogCrashed\(l\.stdout\)\) toolsKey = SERVER_CRASHED;/);
-    expect(src.indexOf('serverLogCrashed(l.stdout)')).toBeLessThan(src.indexOf("rec('RF', 'rf-tools'"));
+    expect(src).toMatch(/const crashed = l\.exitCode !== 0 \|\| serverLogCrashed\(l\.stdout\);/);
+    expect(src).toMatch(/if \(crashed \|\| task\.state === 'exited' \|\| task\.state === 'running'\) toolsKey = SERVER_CRASHED;/);
+    expect(src.indexOf('taskRunState(sd.stdout)')).toBeLessThan(src.indexOf("rec('RF', 'rf-tools'"));
     expect(src).toMatch(/::warning title=member-host known gap::/);
   });
 });
@@ -257,15 +327,18 @@ describe('rollback (RB / RBS)', () => {
 
   it('follows the documented order and gates every step on the previous one', () => {
     const steps = rollbackSteps(B);
+    const aside = dataAsidePath(B);
+    expect(aside).toBe(`$HOME/.apra-fleet/data.replaced-${/replace-backup-(.+)$/.exec(B)![1]}`);
     expect(steps[0]).toMatch(/apra-fleet\.exe" uninstall --force --yes$/);
-    expect(steps[1]).toBe('rm -rf "$HOME/.apra-fleet/data"');
-    expect(steps[2]).toBe(`cp -R '${B}/data' "$HOME/.apra-fleet/data"`);
-    expect(steps[3]).toBe(`if [ -e '${B}/fleet.key' ]; then cp '${B}/fleet.key' "$HOME/.apra-fleet/fleet.key"; else rm -f "$HOME/.apra-fleet/fleet.key"; fi`);
-    expect(steps[4]).toBe(guardedReinstallCommand(B));
+    // docs/install.md Rollback: the aside copy; data/ kept if never moved; the backup only when neither exists.
+    expect(steps[1]).toBe(`if [ -d "${aside}" ]; then rm -rf "$HOME/.apra-fleet/data" && mv "${aside}" "$HOME/.apra-fleet/data"; elif [ ! -d "$HOME/.apra-fleet/data" ]; then cp -R '${B}/data' "$HOME/.apra-fleet/data"; fi`);
+    // fleet.key only if missing.
+    expect(steps[2]).toBe(`if [ ! -f "$HOME/.apra-fleet/fleet.key" ] && [ -f '${B}/fleet.key' ]; then cp '${B}/fleet.key' "$HOME/.apra-fleet/fleet.key"; fi`);
+    expect(steps[3]).toBe(guardedReinstallCommand(B));
     const cmd = rollbackCommand(B);
     expect(cmd).toBe(`${steps.join(' && ')} && echo ${ROLLBACK_OK}`);
-    // The only ';' are inside the conditional fleet.key step.
-    expect(cmd.replace(steps[3], '')).not.toMatch(/;/);
+    // The only ';' are inside the two conditional steps.
+    expect(cmd.replace(steps[1], '').replace(steps[2], '')).not.toMatch(/;/);
   });
 
   it('the RBS refusal attempt is the guarded reinstall ALONE: no uninstall, no data removal or restore', () => {
@@ -365,7 +438,11 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
     fs.writeFileSync(path.join(backup, 'data', 'agents.json'), '[]');
     fs.writeFileSync(path.join(backup, 'fleet.key'), 'release-key');
     fs.writeFileSync(path.join(backup, 'apra-fleet.exe'), '#!/bin/sh\necho "reinstall $*" >> "$HOME/calls.log"\n', { mode: 0o644 });
-    return { home, mh, backup };
+    // replace-full moved the old data aside under the backup's stamp.
+    const aside = path.join(mh, 'data.replaced-20261125T000000Z');
+    fs.mkdirSync(aside, { recursive: true });
+    fs.writeFileSync(path.join(aside, 'registry.json'), '{}');
+    return { home, mh, backup, aside };
   };
   const runIn = (home: string, cmd: string) => {
     const env = { ...process.env, HOME: home };
@@ -373,28 +450,46 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
     return spawnSync('bash', ['-c', cmd], { env, encoding: 'utf8' });
   };
 
-  it.skipIf(!posixHost)('runs every step in order and restores data/ and fleet.key from the backup', () => {
-    const { home, mh, backup } = setup(0);
+  it.skipIf(!posixHost)('runs every step in order: data/ from the aside copy, an existing fleet.key kept', () => {
+    const { home, mh, backup, aside } = setup(0);
     try {
       const r = runIn(home, rollbackCommand(backup));
       expect(r.status, r.stderr).toBe(0);
       expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
-      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['agents.json']);
-      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('release-key');
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['registry.json']);
+      expect(fs.existsSync(aside)).toBe(false);
+      // Restored only if missing: the key the member has stays.
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('candidate-key');
       expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm claude --force\n');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it.skipIf(!posixHost)('a backup without fleet.key: the chain is intact, succeeds, and the candidate key is dropped', () => {
+  it.skipIf(!posixHost)('no aside copy: data/ in place is kept; with no data/ either, the backup is used; a missing fleet.key is restored', () => {
+    const { home, mh, backup, aside } = setup(0);
+    fs.rmSync(aside, { recursive: true });
+    fs.rmSync(path.join(mh, 'fleet.key'));
+    try {
+      expect(runIn(home, rollbackCommand(backup)).status).toBe(0);
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['member-install.json']);
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('release-key');
+      fs.rmSync(path.join(mh, 'data'), { recursive: true });
+      expect(runIn(home, rollbackCommand(backup)).status).toBe(0);
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['agents.json']);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posixHost)('a backup without fleet.key: the chain is intact and succeeds', () => {
     const { home, mh, backup } = setup(0);
     fs.rmSync(path.join(backup, 'fleet.key'));
     try {
       const r = runIn(home, rollbackCommand(backup));
       expect(r.status, r.stderr).toBe(0);
       expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
-      expect(fs.existsSync(path.join(mh, 'fleet.key'))).toBe(false);
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('candidate-key');
       expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm claude --force\n');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });

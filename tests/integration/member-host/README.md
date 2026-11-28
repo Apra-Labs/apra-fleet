@@ -61,8 +61,10 @@ How the driver talks to the member:
 
 The rollback (`lib/rollback.mjs`) restores from the newest
 `$HOME/.apra-fleet-replace-backup-*` that replace-full made (data/, fleet.key,
-old binary): uninstall, restore data/ and fleet.key, reinstall the old binary,
-each step gated on the previous one (`&&`) and ending in `ROLLBACK-OK`. RB and
+old binary), as docs/install.md says: uninstall; put the old data back from
+`data.replaced-<stamp>` (data/ kept if never moved; the backup's data/ only
+when neither exists); restore fleet.key only if missing; reinstall the old
+binary. Each step is gated on the previous one (`&&`) and ending in `ROLLBACK-OK`. RB and
 RBS then require the data dir listing and fleet.key hash to EQUAL the snapshot
 taken right before that pass's replace-full. RBS's refusal attempt runs only
 the guarded step (the old binary's reinstall) with the supervisor running, so
@@ -82,8 +84,12 @@ all three hold:
 - keyline `SERVER-NOT-STARTED`: the auto-start handed off to the service
   manager and timed out;
 - the candidate is older than 0.4.7;
-- the server log the error names, and `data/fleet.log`, show no crash
-  (uncaughtException, unhandledRejection, fatal, nonzero exit).
+- the ApraFleet task's Last Result is a never-ran code (a run that ended, with
+  any code, or is still running is not the gap);
+- the server log the error names, and `data/fleet.log` (where the task wrapper
+  appends the server's stderr), show no crash: uncaughtException,
+  unhandledRejection, fatal, nonzero exit, Node's `Node.js vX.Y.Z` crash
+  footer, or an error-level `startup` record.
 
 That signature alone cannot tell the gap from a member-mode server crashing
 on start, and nothing else in the regression suite starts a `--member` http

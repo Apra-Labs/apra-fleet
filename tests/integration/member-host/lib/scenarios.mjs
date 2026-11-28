@@ -66,12 +66,60 @@ export function namedServerLog(text) {
 }
 
 /**
- * Whether server log text shows a crash or an error exit: an
- * uncaughtException / unhandledRejection shutdown record, a fatal entry, or a
- * nonzero exit. An absent or empty log is no crash (the server never ran).
+ * Whether server log text shows a crash or an error exit:
+ * - the server's own shutdown record (uncaughtException / unhandledRejection),
+ *   a fatal entry, or a nonzero exit;
+ * - Node's default crash text, which ends with the `Node.js vX.Y.Z` footer: a
+ *   throw before the server installs its handlers leaves no record of its
+ *   own, only that text, which the task wrapper appends to data/fleet.log;
+ * - an error-level start-up record (`"level":"error","tag":"startup"`, or its
+ *   stderr mirror `[fleet:error] startup`): a port conflict or an
+ *   unresponsive instance, which exits 0.
+ * A bare error-level record is NOT a crash: the named log can be the `start`
+ * CLI's own, which logs `Start failed` at error level (tag cli) in the gap.
+ * An absent or empty log shows no crash; it does not prove the server never
+ * ran (taskRunState decides that).
  */
 export function serverLogCrashed(logText) {
-  return /uncaughtException|unhandledRejection|\bfatal\b|exit(?:ed)?(?: with)? code [1-9]|exitCode"?:\s*[1-9]/i.test(String(logText ?? ''));
+  const t = String(logText ?? '');
+  return /uncaughtException|unhandledRejection|\bfatal\b|exit(?:ed)?(?: with)? code [1-9]|exitCode"?:\s*[1-9]/i.test(t)
+    || /^Node\.js v\d+\.\d+\.\d+\s*$/m.test(t)
+    || t.includes('"level":"error","tag":"startup"')
+    || t.includes('[fleet:error] startup ');
+}
+
+/**
+ * Task Scheduler "Last Result" codes that mean the task never ran its action
+ * (the gap): SCHED_S_TASK_HAS_NOT_RUN, and the run being refused or failing
+ * to log on (no interactive session for an InteractiveToken task).
+ */
+export const TASK_NEVER_RAN_CODES = Object.freeze([
+  0x41303, // 267011 SCHED_S_TASK_HAS_NOT_RUN
+  0x800710e0, // the operator or administrator has refused the request
+  0x80070520, // a specified logon session does not exist
+  0x8007052e, // logon failure: unknown user name or bad password
+]);
+/** SCHED_S_TASK_RUNNING: the action is running (yet the server did not answer /health). */
+export const TASK_RUNNING_CODE = 0x41301;
+
+/**
+ * What the ApraFleet task's "Last Result" (serviceDiagCommand output) says:
+ * 'never-ran' (a TASK_NEVER_RAN_CODES value: the gap), 'running' (alive but
+ * not answering: not the gap), 'exited' (the action ran and ended, any code
+ * including 0: a server that exits is not the gap) or 'unknown' (no task or
+ * no readable Last Result). Decimal or 0x hex, signed or not.
+ */
+export function taskRunState(diagText) {
+  const m = /Last Result:\s*(-?0x[0-9a-f]+|-?\d+)/i.exec(String(diagText ?? ''));
+  if (!m) return { state: 'unknown', code: null };
+  const neg = m[1].startsWith('-');
+  const raw = neg ? m[1].slice(1) : m[1];
+  let n = raw.toLowerCase().startsWith('0x') ? parseInt(raw, 16) : Number(raw);
+  if (neg) n = -n;
+  const code = n < 0 ? (n >>> 0) : n; // -2147020576 -> 0x800710E0
+  if (TASK_NEVER_RAN_CODES.includes(code)) return { state: 'never-ran', code };
+  if (code === TASK_RUNNING_CODE) return { state: 'running', code };
+  return { state: 'exited', code };
 }
 
 /**
