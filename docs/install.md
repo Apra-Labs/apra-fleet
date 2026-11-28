@@ -602,10 +602,16 @@ Where the backup is depends on who did the replacement:
   if it was moved; the old data was moved to
   `<home>/.apra-fleet/data.replaced-<stamp>`.
 
-Run `apra-fleet uninstall --force --yes` for the member install, put the old
-data back as `<home>/.apra-fleet/data` (the moved-aside copy, else the
-backup's), restore `fleet.key` to `<home>/.apra-fleet/fleet.key` if the backup
-has one, then reinstall the PREVIOUS version from the binary copy in the
+Run `apra-fleet uninstall --force --yes` for the member install, then make
+sure `<home>/.apra-fleet/data` holds the old data:
+- `data/` was never moved aside (the failure came before the move, so there
+  is no `data.replaced*` directory): keep it as it is. The backup was taken
+  while the old server ran and may be torn.
+- Otherwise, move the moved-aside copy back to `data`.
+- Only when neither exists, copy the backup's `data/`.
+
+Restore `fleet.key` to `<home>/.apra-fleet/fleet.key` if the backup has one
+and the member has none, then reinstall the PREVIOUS version from the binary copy in the
 backup, e.g.
 `'<home>/.apra-fleet-replace-backup-<stamp>/apra-fleet' install --llm <provider> --force`
 (`apra-fleet.exe` on Windows). A running fleet-sprint supervisor makes that

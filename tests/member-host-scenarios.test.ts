@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PASS_IDS, PASSES, REFUSAL_CODE, REPLACE_REFUSAL_REASON, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
-  KNOWN_GAP_MEMBER_SERVER, SERVER_NOT_STARTED, toolListKeyline,
+  KNOWN_GAP_MEMBER_SERVER, SERVER_NOT_STARTED, SERVER_CRASHED, toolListKeyline, namedServerLog, serverLogCrashed, predatesGapFix,
 } from './integration/member-host/lib/scenarios.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -179,6 +179,7 @@ describe('verdict mapping (PASS / FAIL / INCONCLUSIVE)', () => {
 
   it('any other rf-tools failure stays FAIL, and a clean run lists no known gap', () => {
     expect(buildReport(rfArgs('TOOLS-WRONG', 'Server starting via service manager... AUTOSTART')).final.verdict).toBe('FAIL');
+    expect(buildReport(rfArgs(SERVER_CRASHED, 'Server starting via service manager... AUTOSTART')).final.verdict).toBe('FAIL');
     const ok = buildReport({ passIds: ['RF'], recordsByPass: { RF: okRecords('RF') }, startedAt: 's', finishedAt: 'f' });
     expect(ok.knownGaps).toEqual([]);
     expect(ok.markdown).not.toMatch(/KNOWN-GAP/);
@@ -186,21 +187,46 @@ describe('verdict mapping (PASS / FAIL / INCONCLUSIVE)', () => {
 });
 
 describe('rf-tools classification from the full call --list-tools output', () => {
-  const gap = 'Error: {"error":{"code":"AUTOSTART_TIMEOUT","message":"Started the apra-fleet HTTP server but it did not answer /health ... said: Server starting via service manager...\\nServer did not start in time."}}';
+  // The real error text of a CI run (JSON-escaped backslashes and all).
+  const gap = String.raw`{"error":{"code":"AUTOSTART_TIMEOUT","message":"Started the apra-fleet HTTP server but it did not answer /health within 45000ms. Check the last server log: C:\\Users\\fleetmember\\.apra-fleet\\data\\logs\\fleet-4540.log.\n'C:\\Users\\fleetmember\\.apra-fleet\\bin\\apra-fleet.exe start' said: Server starting via service manager...\nServer did not start in time. Check logs at: C:\\Users\\fleetmember\\.apra-fleet\\data\\fleet.log"}}`;
+  const cand = 'v0.4.6_3e4540';
 
   it('TOOLS-OK only for the member tool set; the service-manager auto-start timeout is the known gap; anything else is TOOLS-WRONG', () => {
-    expect(toolListKeyline(0, 'kb_query\ncode_query\n')).toBe('TOOLS-OK');
-    expect(toolListKeyline(0, 'kb_query\ncode_query\nexecute_command\n')).toBe('TOOLS-WRONG');
-    expect(toolListKeyline(1, gap)).toBe(SERVER_NOT_STARTED);
+    expect(toolListKeyline(0, 'kb_query\ncode_query\n', cand)).toBe('TOOLS-OK');
+    expect(toolListKeyline(0, 'kb_query\ncode_query\nexecute_command\n', cand)).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, gap, cand)).toBe(SERVER_NOT_STARTED);
     // A timeout without the service-manager start, or another auto-start error, is not the gap.
-    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_TIMEOUT","message":"waiting for another client"}}')).toBe('TOOLS-WRONG');
-    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_VERSION_SKEW"}} via service manager')).toBe('TOOLS-WRONG');
-    expect(toolListKeyline(0, gap)).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_TIMEOUT","message":"waiting for another client"}}', cand)).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_VERSION_SKEW"}} via service manager', cand)).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(0, gap, cand)).toBe('TOOLS-WRONG');
   });
 
-  it('the driver classifies from the full output, not the recorded tail, and warns loudly', () => {
+  it('the gap expires: a candidate at or past the fix, or of unknown version, gets no excuse', () => {
+    expect(toolListKeyline(1, gap, 'v0.4.7_abc123')).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, gap, 'v0.5.0')).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, gap, null)).toBe('TOOLS-WRONG');
+    expect(predatesGapFix('v0.4.6_x')).toBe(true);
+    expect(predatesGapFix('v0.4.10')).toBe(false);
+    expect(predatesGapFix('0.3.99')).toBe(true);
+  });
+
+  it('names the server log the error points at (plain drive path only), and spots a crash in it', () => {
+    expect(namedServerLog(gap)).toBe('C:\\Users\\fleetmember\\.apra-fleet\\data\\logs\\fleet-4540.log');
+    expect(namedServerLog('Check the last server log: C:\\x"; rm -rf ~; ".log')).toBeNull();
+    expect(namedServerLog('no log named')).toBeNull();
+    expect(serverLogCrashed('{"level":"error","tag":"shutdown","reason":"uncaughtException","pid":1}')).toBe(true);
+    expect(serverLogCrashed('{"level":"error","tag":"shutdown","reason":"unhandledRejection"}')).toBe(true);
+    expect(serverLogCrashed('FATAL: cannot bind')).toBe(true);
+    expect(serverLogCrashed('server exited with code 3')).toBe(true);
+    expect(serverLogCrashed('== /c/x/fleet.log\ntail: cannot open /c/x/fleet.log for reading: No such file or directory')).toBe(false);
+    expect(serverLogCrashed('{"level":"info","tag":"start","msg":"listening"}')).toBe(false);
+  });
+
+  it('the driver classifies from the full output, reads the named log before excusing, and warns loudly', () => {
     const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
-    expect(src).toMatch(/toolListKeyline\(t\.exitCode, t\.exitCode === 0 \? t\.stdout : out\(t\)\)/);
+    expect(src).toMatch(/toolListKeyline\(t\.exitCode, t\.exitCode === 0 \? t\.stdout : out\(t\), candVersion\)/);
+    expect(src).toMatch(/if \(l\.exitCode !== 0 \|\| serverLogCrashed\(l\.stdout\)\) toolsKey = SERVER_CRASHED;/);
+    expect(src.indexOf('serverLogCrashed(l.stdout)')).toBeLessThan(src.indexOf("rec('RF', 'rf-tools'"));
     expect(src).toMatch(/::warning title=member-host known gap::/);
   });
 });

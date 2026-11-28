@@ -15,28 +15,63 @@ export const REPLACE_REFUSAL_REASON = 'fleet-se-running';
  * Known product gap, printed verbatim in the report: on Windows the member's
  * HTTP server is a scheduled task that runs only in an interactive logon
  * session, so a member reached only over SSH never gets a running server
- * (call --list-tools times out auto-starting it). A step that fails ONLY with
- * this signature is ENV-LIMITED (non-blocking) with this note; any other
- * failure of the same step stays FAIL.
+ * (call --list-tools times out auto-starting it). rf-tools is ENV-LIMITED
+ * (non-blocking) with this note ONLY when the failure has the gap's
+ * signature, the server log the error names shows no crash, and the
+ * candidate predates the fix; anything else stays FAIL.
  */
 export const KNOWN_GAP_MEMBER_SERVER = 'KNOWN-GAP (member server needs an interactive logon on Windows; tracked for v0.4.7)';
+/** The first core version expected to fix the gap: from it on the gap is a plain FAIL. */
+export const KNOWN_GAP_FIXED_IN = [0, 4, 7];
 /** rf-tools keyline when the member's server could not be auto-started (the known gap's signature). */
 export const SERVER_NOT_STARTED = 'SERVER-NOT-STARTED';
+/** rf-tools keyline when the gap's signature came with a crash in the named server log (never excused). */
+export const SERVER_CRASHED = 'SERVER-CRASHED';
+
+/** Whether a candidate version string (e.g. v0.4.6_3e4540) is older than KNOWN_GAP_FIXED_IN; unknown is NOT older. */
+export function predatesGapFix(version) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? ''));
+  if (!m) return false;
+  const v = m.slice(1, 4).map(Number);
+  for (let i = 0; i < 3; i++) if (v[i] !== KNOWN_GAP_FIXED_IN[i]) return v[i] < KNOWN_GAP_FIXED_IN[i];
+  return false;
+}
 
 /**
  * rf-tools keyline from the FULL `call --list-tools` output (the recorded
  * `observed` is only its tail, which cuts the error code off): TOOLS-OK;
  * SERVER-NOT-STARTED when the client's auto-start handed the start to the
- * service manager and the server never answered (the known gap's
- * signature); else TOOLS-WRONG. A server that crashes on start under the
- * service manager has the same signature here; the fresh-install Windows
- * passes (a real logon session) are what catch that.
+ * service manager and the server never answered, and the candidate predates
+ * the gap's fix; else TOOLS-WRONG. This signature alone cannot tell the gap
+ * from a member-mode server that crashed on start (nothing else in the
+ * regression suite starts a --member http server on Windows), so the driver
+ * also reads the server log the error names (serverLogCrashed).
  */
-export function toolListKeyline(exitCode, text) {
+export function toolListKeyline(exitCode, text, candidateVersion) {
   const t = String(text ?? '');
   if (exitCode === 0 && /kb_/.test(t) && /code_/.test(t) && !/execute_|register_|credential_/.test(t)) return 'TOOLS-OK';
-  if (exitCode !== 0 && /AUTOSTART_TIMEOUT/.test(t) && /via service manager/.test(t)) return SERVER_NOT_STARTED;
+  if (exitCode !== 0 && /AUTOSTART_TIMEOUT/.test(t) && /via service manager/.test(t) && predatesGapFix(candidateVersion)) return SERVER_NOT_STARTED;
   return 'TOOLS-WRONG';
+}
+
+/**
+ * The server log an AUTOSTART_TIMEOUT names ("Check the last server log:
+ * <path>."), as a plain Windows path (JSON escaping undone), or null.
+ */
+export function namedServerLog(text) {
+  const m = /Check the last server log: (.+?\.log)/.exec(String(text ?? ''));
+  const p = m ? m[1].replace(/\\\\/g, '\\') : null;
+  // It goes into a member command: a plain drive path only.
+  return p && /^[A-Za-z]:[\\\w .()-]+\.log$/.test(p) ? p : null;
+}
+
+/**
+ * Whether server log text shows a crash or an error exit: an
+ * uncaughtException / unhandledRejection shutdown record, a fatal entry, or a
+ * nonzero exit. An absent or empty log is no crash (the server never ran).
+ */
+export function serverLogCrashed(logText) {
+  return /uncaughtException|unhandledRejection|\bfatal\b|exit(?:ed)?(?: with)? code [1-9]|exitCode"?:\s*[1-9]/i.test(String(logText ?? ''));
 }
 
 /**

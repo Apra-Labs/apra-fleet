@@ -76,11 +76,20 @@ data, RFS/RBS unchanged) leaves it out and says so.
 
 Known gap: on Windows the member's server is a scheduled task that runs only
 in an interactive logon session, so a member reached only over SSH has no
-running server. `rf-tools` failing with exactly that signature (keyline
-`SERVER-NOT-STARTED`: the auto-start handed off to the service manager and
-timed out) is ENV-LIMITED with the note `KNOWN-GAP (member server needs an
-interactive logon on Windows; tracked for v0.4.7)`, listed under Overall at
-the top of report.md and as a CI warning. Any other `rf-tools` failure is FAIL.
+running server. `rf-tools` is ENV-LIMITED, with the note `KNOWN-GAP (member
+server needs an interactive logon on Windows; tracked for v0.4.7)`, only when
+all three hold:
+- keyline `SERVER-NOT-STARTED`: the auto-start handed off to the service
+  manager and timed out;
+- the candidate is older than 0.4.7;
+- the server log the error names, and `data/fleet.log`, show no crash
+  (uncaughtException, unhandledRejection, fatal, nonzero exit).
+
+That signature alone cannot tell the gap from a member-mode server crashing
+on start, and nothing else in the regression suite starts a `--member` http
+server on Windows. A crash is `SERVER-CRASHED` (FAIL). The log tails and the
+task's Last Result go to the notes. The gap is listed under Overall at the
+top of report.md and as a CI warning. Any other `rf-tools` failure is FAIL.
 
 A stale or missing release baseline is INCONCLUSIVE (exit 3), never PASS. Every spawned process gets HOME,
 USERPROFILE and GIT_CONFIG_GLOBAL pointed at a temp sandbox.

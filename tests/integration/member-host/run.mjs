@@ -29,9 +29,12 @@ import {
   CHECK_BIN, NODE_PATH_COMMAND, SUPERVISOR_COPY_DIR, detachedLaunchCommand, launchedPid, standInSprintCommandLine,
   sprintLockCommand, sprintStopCommand, fleetSeCheckCommand, waitSupervisorUpCommand, supervisorStopCommand,
   parseFleetSe, idleSupervisorStoppedNote, launchFailureLine, serviceDiagCommand, cimProbeCommand, diagLine,
-  supervisorCopyCommand, supervisorDiagCommand,
+  supervisorCopyCommand, supervisorDiagCommand, gitBashPath,
 } from './lib/commands.mjs';
-import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline, toolListKeyline } from './lib/scenarios.mjs';
+import {
+  PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline, toolListKeyline, namedServerLog, serverLogCrashed,
+  SERVER_NOT_STARTED, SERVER_CRASHED,
+} from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
 import { MEMBER_PROVIDER, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSucceeded } from './lib/rollback.mjs';
 import { toolResult, execOutcome } from './lib/mcp-result.mjs';
@@ -273,8 +276,20 @@ async function realRun(o) {
         rec('RF', 'rf-marker', 'member-install.json', /present/.test(m.stdout) ? m.exitCode : 1, '', tail(out(m), 80));
         const t = await exec(`"${MH}/bin/apra-fleet.exe" call --member ${memberId} --list-tools`);
         // Classified from the FULL output: the recorded tail cuts the error code off.
-        const toolsKey = toolListKeyline(t.exitCode, t.exitCode === 0 ? t.stdout : out(t));
+        let toolsKey = toolListKeyline(t.exitCode, t.exitCode === 0 ? t.stdout : out(t), candVersion);
+        if (toolsKey === SERVER_NOT_STARTED) {
+          // The signature alone cannot tell the gap from a member server that
+          // crashed on start: read the server log the error names (absent =
+          // the server never ran) and the service log. A crash is never excused.
+          const named = namedServerLog(out(t));
+          const logs = [named ? gitBashPath(named) : null, `${MH}/data/fleet.log`].filter(Boolean);
+          const l = await exec(logs.map(f => `echo "== ${f}"; tail -n 200 "${f}" 2>&1`).join('; ') + '; exit 0', 60);
+          if (l.exitCode !== 0 || serverLogCrashed(l.stdout)) toolsKey = SERVER_CRASHED;
+          const lt = await exec(logs.map(f => `echo "== ${f}"; tail -n 12 "${f}" 2>&1`).join('; ') + '; exit 0', 60);
+          notes.push(`RF rf-tools ${toolsKey}: server logs (last lines): ${diagLine(out(lt), 2500)}`);
+        }
         rec('RF', 'rf-tools', 'call --list-tools', t.exitCode, toolsKey, tail(out(t)));
+        // Task state and Last Result go to the notes.
         if (toolsKey !== 'TOOLS-OK') await serviceDiag('RF, after the candidate member install');
       } else if (pass === 'RFS') {
         if (!baseline.tag || !baseline.asset) throw new Error('no usable release baseline');
