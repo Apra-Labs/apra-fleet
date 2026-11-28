@@ -295,7 +295,8 @@ describe('rf-tools classification from the full call --list-tools output', () =>
     const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
     expect(src).toMatch(/toolListKeyline\(t\.exitCode, t\.exitCode === 0 \? t\.stdout : out\(t\), candVersion\)/);
     expect(src).toMatch(/const crashed = l\.exitCode !== 0 \|\| serverLogCrashed\(l\.stdout\);/);
-    expect(src).toMatch(/if \(crashed \|\| task\.state === 'exited' \|\| task\.state === 'running'\) toolsKey = SERVER_CRASHED;/);
+    // Only a positively read never-ran code keeps the gap: unknown, exited and running all FAIL.
+    expect(src).toMatch(/if \(crashed \|\| task\.state !== 'never-ran'\) toolsKey = SERVER_CRASHED;/);
     expect(src.indexOf('taskRunState(sd.stdout)')).toBeLessThan(src.indexOf("rec('RF', 'rf-tools'"));
     expect(src).toMatch(/::warning title=member-host known gap::/);
   });

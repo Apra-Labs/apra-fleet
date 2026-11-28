@@ -291,9 +291,11 @@ async function realRun(o) {
           const logs = [named ? gitBashPath(named) : null, `${MH}/data/fleet.log`].filter(Boolean);
           const l = await exec(logs.map(f => `echo "== ${f}"; tail -n 200 "${f}" 2>&1`).join('; ') + '; exit 0', 60);
           const crashed = l.exitCode !== 0 || serverLogCrashed(l.stdout);
-          if (crashed || task.state === 'exited' || task.state === 'running') toolsKey = SERVER_CRASHED;
+          // Only a positively read never-ran code keeps the gap; unknown (diag failed,
+          // no task, no Last Result line), exited or running is never excused.
+          if (crashed || task.state !== 'never-ran') toolsKey = SERVER_CRASHED;
           const lt = await exec(logs.map(f => `echo "== ${f}"; tail -n 12 "${f}" 2>&1`).join('; ') + '; exit 0', 60);
-          notes.push(`RF rf-tools ${toolsKey}: task Last Result ${task.code ?? 'unreadable'} (${task.state}); crash in the logs: ${crashed ? 'yes' : 'no'}`);
+          notes.push(`RF rf-tools ${toolsKey}: task Last Result ${task.code ?? 'unreadable'} (${task.state}${task.state === 'unknown' ? `: service diag exit ${sd.exitCode}, no Last Result line` : ''}); crash in the logs: ${crashed ? 'yes' : 'no'}`);
           notes.push(`service diag (RF, after the candidate member install): ${diagLine(sd.stdout)}`);
           notes.push(`RF rf-tools server logs (last lines): ${diagLine(out(lt), 2500)}`);
         }

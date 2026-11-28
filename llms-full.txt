@@ -1748,7 +1748,7 @@ sure `<home>/.apra-fleet/data` holds the old data:
 - `data/` was never moved aside (the failure came before the move, so there
   is no `data.replaced*` directory): keep it as it is. The backup was taken
   while the old server ran and may be torn.
-- Otherwise, move the moved-aside copy back to `data`.
+- Otherwise, replace `data` with the moved-aside copy.
 - Only when neither exists, copy the backup's `data/`.
 
 Restore `fleet.key` to `<home>/.apra-fleet/fleet.key` if the backup has one

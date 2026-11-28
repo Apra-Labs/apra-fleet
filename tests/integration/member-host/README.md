@@ -80,12 +80,13 @@ Known gap: on Windows the member's server is a scheduled task that runs only
 in an interactive logon session, so a member reached only over SSH has no
 running server. `rf-tools` is ENV-LIMITED, with the note `KNOWN-GAP (member
 server needs an interactive logon on Windows; tracked for v0.4.7)`, only when
-all three hold:
+all four hold:
 - keyline `SERVER-NOT-STARTED`: the auto-start handed off to the service
   manager and timed out;
 - the candidate is older than 0.4.7;
-- the ApraFleet task's Last Result is a never-ran code (a run that ended, with
-  any code, or is still running is not the gap);
+- the ApraFleet task's Last Result reads as a never-ran code (a run that
+  ended, with any code, or is still running is not the gap; an unreadable
+  Last Result, no task or a failed diag is not either);
 - the server log the error names, and `data/fleet.log` (where the task wrapper
   appends the server's stderr), show no crash: uncaughtException,
   unhandledRejection, fatal, nonzero exit, Node's `Node.js vX.Y.Z` crash

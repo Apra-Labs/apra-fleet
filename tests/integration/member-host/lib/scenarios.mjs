@@ -107,7 +107,7 @@ export const TASK_RUNNING_CODE = 0x41301;
  * 'never-ran' (a TASK_NEVER_RAN_CODES value: the gap), 'running' (alive but
  * not answering: not the gap), 'exited' (the action ran and ended, any code
  * including 0: a server that exits is not the gap) or 'unknown' (no task or
- * no readable Last Result). Decimal or 0x hex, signed or not.
+ * no readable Last Result; never excused either). Decimal or 0x hex, signed or not.
  */
 export function taskRunState(diagText) {
   const m = /Last Result:\s*(-?0x[0-9a-f]+|-?\d+)/i.exec(String(diagText ?? ''));
