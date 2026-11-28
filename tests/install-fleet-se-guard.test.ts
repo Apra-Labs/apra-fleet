@@ -78,6 +78,16 @@ describe('detectRunningFleetSe', () => {
     expect(r.warnings).toEqual([]);
   });
 
+  it('a lock pid that exits while its command line is read is a stale lock, not a refusal', async () => {
+    let alive = true;
+    const r = await detectRunningFleetSe({
+      ...fakeProbes({ locks: { 'a.lock': '111' } }),
+      isPidAlive: () => alive,
+      commandLine: () => { alive = false; return null; },
+    });
+    expect(r.sprints).toEqual([]);
+  });
+
   it('a dead lock pid is skipped without reading its command line (stale lock path unchanged)', async () => {
     const commandLine = vi.fn(() => null);
     const r = await detectRunningFleetSe({ ...fakeProbes({ locks: { 'a.lock': '111' }, alive: [] }), commandLine });

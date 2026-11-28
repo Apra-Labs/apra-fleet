@@ -142,6 +142,8 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
     if (!Number.isInteger(pid) || pid <= 0 || pid === probes.selfPid() || !probes.isPidAlive(pid)) continue;
     const cmd = probes.commandLine(pid);
     if (cmd === null) {
+      // It may have exited between the two probes: then it is a stale lock.
+      if (!probes.isPidAlive(pid)) continue;
       // Fail closed: a live pid we cannot identify may be a sprint.
       sprints.set(pid, { pid, lockFile, unverified: true });
       continue;

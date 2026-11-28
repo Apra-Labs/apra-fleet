@@ -612,6 +612,23 @@ describe('9hyz: a live fleet-sprint sprint on the member refuses before anything
     });
   }
 
+  it('an unverified sprint (unreadable command line) names the lock file to delete if it is stale', async () => {
+    const lock = 'C:\\Users\\u s\\AppData\\Local\\Temp\\apra-fleet-sprint-locks\\b.lock';
+    const h = harness(WINDOWS, { supervisorLine: `FLEET_SE sprint pid=7680 unverified lock=${lock}\n` });
+    const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'fleet-se-running', version: OLD });
+    expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check']);
+    const detail = (r as { detail: string }).detail;
+    expect(detail).toContain("pid 7680's command line could not be read");
+    expect(detail).toContain(`delete the lock file ${lock} on the member, then run replace-full again`);
+  });
+
+  it('a verified sprint line carries no stale-lock advice', async () => {
+    const h = harness(LINUX, { supervisorLine: 'FLEET_SE sprint pid=16100 id=s7\n' });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect((r as { detail: string }).detail).not.toContain('delete the lock file');
+  });
+
   it('nothing running (or the check errored) -> proceeds', async () => {
     for (const line of ['', 'FLEET_SE_CHECK error probe broke\n']) {
       const h = harness(LINUX, { supervisorLine: line });
