@@ -68,23 +68,285 @@ export function baselineInstallArgs(pass) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Supervisor and stand-in sprint on the member (RFS / RBS). Every command is
+// a Git Bash string; Windows paths are resolved in JS from info.home.
+// ---------------------------------------------------------------------------
+
+export const SUPERVISOR_PORT = 8787;
+/** The installed fleet-sprint supervisor entry (Git Bash form). */
 export const SUPERVISOR_ENTRY = '$HOME/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs';
 export const SUPERVISOR_MISSING_MARKER = 'SUPERVISOR-ENTRY-MISSING';
+/**
+ * Where RFS copies the baseline's fleet-sprint runtime before its
+ * replace-full: the member install that replaces the full install carries no
+ * fleet-sprint, so RBS starts its supervisor from this copy. The copy keeps
+ * the installed layout (workflows/ next to node_modules/): serve.mjs imports
+ * bare @apralabs/* packages, which Node resolves by walking up from the
+ * script to <install>/node_modules. A copy of workflows/ alone cannot load.
+ */
+export const SUPERVISOR_COPY_DIR = 'supervisor-runtime';
+/** What the copy must contain for serve.mjs to load (relative to the copy root). */
+export const SUPERVISOR_COPY_PARTS = Object.freeze(['workflows', 'node_modules']);
+/** A package serve.mjs imports (via bin/cli.mjs); its presence proves node_modules was copied. */
+export const SUPERVISOR_RUNTIME_PACKAGE = 'node_modules/@apralabs/apra-fleet-workflow';
 
 /**
- * Starts the fleet-sprint supervisor on the member and asks the fleet whether
- * it is running. When the entry script is absent (a core-only install) the
- * command says so, naming the path, instead of a generic failure.
+ * Copies the installed fleet-sprint runtime (workflows/ + node_modules/, the
+ * same relative layout) to ~/SUPERVISOR_COPY_DIR and prints `copied` only
+ * when serve.mjs and the runtime package it imports are both in the copy.
  */
-export function supervisorStartCommand(fleetBin) {
-  return `if [ ! -f "${SUPERVISOR_ENTRY}" ]; then echo "${SUPERVISOR_MISSING_MARKER}: ${SUPERVISOR_ENTRY} does not exist on the member (the install shipped no fleet-sprint runtime; install without --workflows none)"; exit 1; fi; ` +
-    `nohup node "${SUPERVISOR_ENTRY}" > "$HOME/supervisor.log" 2>&1 & sleep 8; "${fleetBin}" fleet-se-check`;
+export function supervisorCopyCommand(fleetHome = '$HOME/.apra-fleet') {
+  const dst = `$HOME/${SUPERVISOR_COPY_DIR}`;
+  const copies = SUPERVISOR_COPY_PARTS.map(p => `cp -R "${fleetHome}/${p}" "${dst}/${p}"`).join(' && ');
+  return `rm -rf "${dst}" && mkdir -p "${dst}" && ${copies} && test -f "${dst}/workflows/fleet-sprint/bin/serve.mjs" && test -d "${dst}/${SUPERVISOR_RUNTIME_PACKAGE}" && echo copied`;
+}
+/** The candidate installer, copied to the member home to run its read-only `fleet-se-check`. */
+export const CHECK_BIN = 'candidate-check.exe';
+export const SPRINT_LOCK_NAME = 'member-host-standin.lock';
+/** In the stand-in sprint's command line: the guard counts a lock only when its pid's command line looks like a fleet-sprint run. */
+export const STANDIN_SPRINT_TAG = 'fleet-sprint-member-host-standin';
+
+const psq = s => `'${String(s).replace(/'/g, "''")}'`;
+const winJoin = (...parts) => parts.map((p, i) => (i === 0 ? String(p).replace(/[\\/]+$/, '') : String(p).replace(/^[\\/]+|[\\/]+$/g, ''))).join('\\');
+
+/** A PowerShell script as a Git Bash command (UTF-16LE base64, -EncodedCommand). */
+export function powershellEncoded(script) {
+  return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`;
 }
 
-/** The record fields for the supervisor-started step: exit 0 only when the fleet reports it running; a missing entry script is reported with its path. */
-export function supervisorStartOutcome(text) {
-  const t = String(text ?? '');
+// CreateProcessW with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, first with
+// CREATE_BREAKAWAY_FROM_JOB (out of the sshd session's job object, which may
+// be closed -- killing its processes -- when the session ends), then, if the
+// job forbids breakaway, without it. Prints `LAUNCHED rc=<win32 error> pid=<pid>
+// breakaway=yes|no`. No WMI: Win32_Process.Create is refused with Access
+// denied for a key-auth SSH user.
+const LAUNCHER_CS = [
+  'using System; using System.Runtime.InteropServices; using System.Text;',
+  'public static class MhLaunch {',
+  '  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct SI { public int cb; public string r; public string d; public string t; public int x, y, xs, ys, xc, yc, fa, f; public short sw, r2; public IntPtr r3, i, o, e; }',
+  '  [StructLayout(LayoutKind.Sequential)] public struct PI { public IntPtr hp, ht; public int pid, tid; }',
+  '  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inh, uint flags, IntPtr env, string cwd, ref SI si, out PI pi);',
+  '  public static string Run(string cmd, string cwd) {',
+  '    int last = 0;',
+  '    foreach (uint extra in new uint[] { 0x01000000u, 0u }) {',
+  '      SI si = new SI(); si.cb = Marshal.SizeOf(typeof(SI)); PI pi;',
+  '      if (CreateProcessW(null, new StringBuilder(cmd), IntPtr.Zero, IntPtr.Zero, false, 0x00000008u | 0x00000200u | extra, IntPtr.Zero, cwd, ref si, out pi))',
+  '        return "LAUNCHED rc=0 pid=" + pi.pid + " breakaway=" + (extra != 0 ? "yes" : "no");',
+  '      last = Marshal.GetLastWin32Error();',
+  '    }',
+  '    return "LAUNCHED rc=" + last + " pid=0";',
+  '  }',
+  '}',
+].join('\n');
+
+/**
+ * Starts `commandLine` detached from the SSH session (see LAUNCHER_CS) and
+ * prints `LAUNCHED rc=<n> pid=<pid> breakaway=yes|no`. Whether it outlived
+ * the session is checked by the caller in a LATER execute_command.
+ */
+export function detachedLaunchCommand(commandLine, cwd) {
+  return powershellEncoded(
+    `$ProgressPreference = 'SilentlyContinue'; Add-Type -TypeDefinition ${psq(LAUNCHER_CS)}; ` +
+    `$line = [MhLaunch]::Run(${psq(commandLine)}, ${psq(cwd)}); Write-Output $line; if ($line -notmatch '^LAUNCHED rc=0 ') { exit 1 }`,
+  );
+}
+
+/** pid of a detachedLaunchCommand run, or null when it did not start. */
+export function launchedPid(stdout) {
+  const m = /^LAUNCHED rc=(\d+) pid=(\d+)(?: breakaway=(?:yes|no))?\s*$/m.exec(String(stdout ?? '').replace(/\r/g, ''));
+  return m && m[1] === '0' && m[2] !== '0' ? Number(m[2]) : null;
+}
+
+/** Prints the Windows path of node on the member (the launcher needs a full path). */
+export const NODE_PATH_COMMAND = 'cygpath -w "$(command -v node)"';
+
+/** Windows path of serve.mjs: the installed tree, or RFS's copy of it. */
+export function supervisorServePath(home, fromCopy) {
+  return fromCopy
+    ? winJoin(home, SUPERVISOR_COPY_DIR, 'workflows', 'fleet-sprint', 'bin', 'serve.mjs')
+    : winJoin(home, '.apra-fleet', 'workflows', 'fleet-sprint', 'bin', 'serve.mjs');
+}
+
+/**
+ * The supervisor's command line for detachedLaunchCommand. The member user's
+ * profile variables are set explicitly (not left to whatever environment the
+ * launch inherits), so it uses the member's own data dirs.
+ * Output goes to <home>\supervisor.log.
+ */
+export function supervisorCommandLine({ node, serve, home }) {
+  const env = {
+    USERPROFILE: home, HOME: home,
+    APPDATA: winJoin(home, 'AppData', 'Roaming'), LOCALAPPDATA: winJoin(home, 'AppData', 'Local'),
+    TEMP: winJoin(home, 'AppData', 'Local', 'Temp'), TMP: winJoin(home, 'AppData', 'Local', 'Temp'),
+  };
+  const sets = Object.entries(env).map(([k, v]) => `set "${k}=${v}"`).join(' && ');
+  return `cmd.exe /d /s /c "${sets} && "${node}" "${serve}" > "${winJoin(home, 'supervisor.log')}" 2>&1"`;
+}
+
+/**
+ * Launches the supervisor detached from the SSH session. When the entry
+ * script is absent (a core-only install, or no copy) it says so, naming the
+ * path, instead of a generic failure.
+ */
+export function supervisorStartCommand({ node, home, fromCopy = false }) {
+  const serve = supervisorServePath(home, fromCopy);
+  const bashServe = gitBashPath(serve);
+  return `if [ ! -f "${bashServe}" ]; then echo "${SUPERVISOR_MISSING_MARKER}: ${bashServe} does not exist on the member (the install shipped no fleet-sprint runtime; install without --workflows none)"; exit 1; fi; ` +
+    detachedLaunchCommand(supervisorCommandLine({ node, serve, home }), home);
+}
+
+/**
+ * The supervisor-started step: the launch printed a pid AND, in a LATER
+ * execute_command (so it outlived the launching SSH session), the
+ * candidate's fleet-se-check reports a supervisor. A missing entry script is
+ * reported with its path.
+ */
+export function supervisorStartOutcome(launchText, checkText = '') {
+  const t = String(launchText ?? '');
   const missing = t.split(/\r?\n/).find(l => l.includes(SUPERVISOR_MISSING_MARKER));
   if (missing) return { exit: 1, observed: missing.trim() };
-  return { exit: /FLEET_SE supervisor/.test(t) ? 0 : 1, observed: t.slice(-200) };
+  const pid = launchedPid(t);
+  const found = parseFleetSe(checkText).supervisor;
+  return {
+    exit: pid && found ? 0 : 1,
+    observed: pid ? `launched pid ${pid}; fleet-se-check: ${found ? `supervisor pid=${found.pid} port=${found.port}` : String(checkText ?? '').trim().slice(-200) || '(none)'}` : launchFailureLine(t),
+  };
+}
+
+/**
+ * Why a detachedLaunchCommand printed no pid: the PowerShell error MESSAGE line
+ * (the tail of a PowerShell error is CategoryInfo / FullyQualifiedErrorId,
+ * which hides it), else the LAUNCHED line with its Win32 error code, else the tail.
+ */
+export function launchFailureLine(text) {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+  const pick = lines.find(l => /^LAUNCHED rc=/.test(l))
+    ?? lines.find(l => /Invoke-CimMethod|denied|not recognized|cannot|error/i.test(l) && !/^(\+|CategoryInfo|FullyQualifiedErrorId)/.test(l));
+  return (pick ?? lines.slice(-3).join(' | ') ?? '').slice(0, 300) || '(no output)';
+}
+
+/** A long-lived stand-in for a running sprint (no LLM): node idling, its command line tagged as fleet-sprint. */
+export function standInSprintCommandLine({ node }) {
+  return `"${node}" -e "setTimeout(function(){}, 3600000)" ${STANDIN_SPRINT_TAG}`;
+}
+
+function checkPid(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`bad pid ${pid}`);
+  return n;
+}
+
+/**
+ * Writes the stand-in's sprint lock where the install guard looks
+ * (<os.tmpdir()>/apra-fleet-sprint-locks of the member SSH session, the same
+ * environment fleet-se-check runs in).
+ */
+export function sprintLockCommand(pid) {
+  const n = checkPid(pid);
+  return `node -e "const fs=require('fs'),p=require('path'),d=p.join(require('os').tmpdir(),'apra-fleet-sprint-locks');fs.mkdirSync(d,{recursive:true});fs.writeFileSync(p.join(d,'${SPRINT_LOCK_NAME}'),'${n}')" && ${fleetSeCheckCommand()}`;
+}
+
+/** Ends the stand-in and removes its lock, then runs fleetSeCheckCommand. */
+export function sprintStopCommand(pid) {
+  const n = checkPid(pid);
+  return `${powershellEncoded(`$ProgressPreference = 'SilentlyContinue'; Stop-Process -Id ${n} -Force -ErrorAction SilentlyContinue; exit 0`)}; ` +
+    `node -e "require('fs').rmSync(require('path').join(require('os').tmpdir(),'apra-fleet-sprint-locks','${SPRINT_LOCK_NAME}'),{force:true})" && ${fleetSeCheckCommand()}`;
+}
+
+/** The candidate's read-only fleet-se-check (the install guard's own detection), run from the copy in the member home. */
+export function fleetSeCheckCommand() {
+  return `"$HOME/${CHECK_BIN}" fleet-se-check`;
+}
+
+/** Waits (up to `seconds`) for the supervisor's /api/health, then runs fleetSeCheckCommand. */
+export function waitSupervisorUpCommand(seconds = 90) {
+  return `i=0; while [ "$i" -lt ${seconds} ] && ! curl -s -m 2 -o /dev/null http://127.0.0.1:${SUPERVISOR_PORT}/api/health; do sleep 1; i=$((i+1)); done; ${fleetSeCheckCommand()}`;
+}
+
+/** Graceful stop (POST /api/shutdown with a JSON body), wait until /api/health stops answering, then fleetSeCheckCommand. */
+export function supervisorStopCommand() {
+  const base = `http://127.0.0.1:${SUPERVISOR_PORT}/api`;
+  return `curl -s -m 10 -o /dev/null -X POST ${base}/shutdown -H 'Content-Type: application/json' -d '{}'; ` +
+    `i=0; while [ "$i" -lt 60 ] && curl -s -m 2 -o /dev/null ${base}/health; do sleep 1; i=$((i+1)); done; ${fleetSeCheckCommand()}`;
+}
+
+/** Parses fleet-se-check output: { ok, supervisor: {pid, port} | null, sprints: [pid] }. */
+export function parseFleetSe(stdout) {
+  const lines = String(stdout ?? '').replace(/\r/g, '').split('\n').map(l => l.trim());
+  const sup = lines.map(l => /^FLEET_SE supervisor pid=(\d+) port=(\d+)/.exec(l)).find(Boolean);
+  return {
+    ok: lines.includes('FLEET_SE_CHECK ok'),
+    supervisor: sup ? { pid: Number(sup[1]), port: Number(sup[2]) } : null,
+    sprints: lines.map(l => /^FLEET_SE sprint pid=(\d+)/.exec(l)).filter(Boolean).map(m => Number(m[1])),
+  };
+}
+
+/** Whether replace-full's result says it stopped the idle supervisor (src/services/member-fleet-install.ts). */
+export function idleSupervisorStoppedNote(text, port = SUPERVISOR_PORT) {
+  return String(text ?? '').includes(`the idle fleet-sprint supervisor (port ${port}) was stopped in step 0`);
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics (report notes only, never a step verdict).
+// ---------------------------------------------------------------------------
+
+/** The per-user task name the product registers (src/services/service-manager/types.ts WINDOWS_TASK_NAME). */
+export const SERVICE_TASK_NAME = 'ApraFleet';
+
+/**
+ * Why the member's HTTP service is (not) running: the scheduled task's state,
+ * last result and logon mode, the HKCU Run fallback entry and the logged-on
+ * sessions on the host. PowerShell, so Git Bash cannot path-mangle the
+ * `/query` style arguments.
+ */
+export function serviceDiagCommand() {
+  return powershellEncoded([
+    "$ProgressPreference = 'SilentlyContinue'",
+    `$t = schtasks.exe /query /tn ${SERVICE_TASK_NAME} /v /fo LIST 2>&1 | ForEach-Object { "$_" } | Out-String`,
+    "$keep = $t -split '\\r?\\n' | Where-Object { $_ -match '^(Status|Last Run Time|Last Result|Logon Mode|Run As User|Scheduled Task State|ERROR)' } | ForEach-Object { $_ -replace '\\s{2,}', ' ' }",
+    "'TASK ' + ($keep -join ' ; ')",
+    `$r = reg.exe query 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' /v ${SERVICE_TASK_NAME} 2>&1 | ForEach-Object { "$_" } | Out-String`,
+    "'RUNKEY ' + (($r -split '\\r?\\n' | Where-Object { $_.Trim() }) -join ' ; ')",
+    "$q = query.exe user 2>&1 | Out-String",
+    "'SESSIONS ' + (($q -split '\\r?\\n' | Where-Object { $_.Trim() }) -join ' ; ')",
+    'exit 0',
+  ].join('; '));
+}
+
+/**
+ * What the install guard's command-line probe (src/utils/process-utils.ts
+ * processCommandLine: Get-CimInstance Win32_Process) gets for `pid` in this
+ * SSH session: `CIM-OK <command line>`, `CIM-EMPTY` or `CIM-ERR <message>`.
+ */
+export function cimProbeCommand(pid) {
+  const n = checkPid(pid);
+  return powershellEncoded(
+    "$ProgressPreference = 'SilentlyContinue'; " +
+    `try { $c = (Get-CimInstance Win32_Process -Filter "ProcessId=${n}" -ErrorAction Stop).CommandLine; ` +
+    "if ($c) { 'CIM-OK ' + $c } else { 'CIM-EMPTY no command line returned' } } catch { 'CIM-ERR ' + $_.Exception.Message }; exit 0",
+  );
+}
+
+/**
+ * Why a supervisor launch was not seen (report note only): whether the
+ * launched pid is still alive (Get-Process, not CIM), the size of the
+ * redirect log <home>/supervisor.log, its tail, and the tail of the
+ * supervisor's own log (~/.apra-fleet-se/logs/supervisor.log; the harness
+ * launches it without FLEET_SE_DATA_DIR).
+ */
+export function supervisorDiagCommand(pid) {
+  const alive = pid && Number(pid) > 0
+    ? `${powershellEncoded(`$ProgressPreference = 'SilentlyContinue'; $p = Get-Process -Id ${checkPid(pid)} -ErrorAction SilentlyContinue; if ($p) { 'PID-ALIVE ' + $p.ProcessName } else { 'PID-GONE' }; exit 0`)}; `
+    : 'echo "PID-NONE no pid was launched"; ';
+  const own = '"$HOME/.apra-fleet-se/logs/supervisor.log"';
+  return `${alive}` +
+    'printf "REDIRECT-LOG %s\\n" "$(wc -c "$HOME/supervisor.log" 2>&1)";tail -n 5 "$HOME/supervisor.log" 2>&1 | sed "s/^/REDIRECT-TAIL /"; ' +
+    `tail -n 8 ${own} 2>&1 | sed "s/^/OWN-LOG /"; exit 0`;
+}
+
+/** One report-note line from a diagnostic's output (single line, CLIXML noise dropped, bounded). */
+export function diagLine(text, max = 600) {
+  return String(text ?? '').replace(/\r/g, '').split('\n').map(l => l.trim())
+    .filter(l => l && !l.startsWith('#< CLIXML') && !l.startsWith('<Objs')).join(' | ').slice(0, max) || '(no output)';
 }

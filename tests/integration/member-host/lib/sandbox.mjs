@@ -4,6 +4,9 @@
 // runner's real home. Pure; unit-tested by tests/member-host-harness.test.ts.
 import path from 'node:path';
 
+/** The orchestrator's port on the runner: not the default 7523 the member's installs use. */
+export const ORCHESTRATOR_PORT = 7623;
+
 export function resolveSandbox(root) {
   const r = path.resolve(root);
   return {
@@ -41,5 +44,9 @@ export function sandboxEnv(base, sandbox) {
   env.TMP = sandbox.tmp;
   env.TEMP = sandbox.tmp;
   env.APRA_FLEET_DATA_DIR = path.join(sandbox.home, '.apra-fleet', 'data');
+  // The member is another OS user on this same host, and its installs bind the
+  // default port. The orchestrator's own install (its service) must not hold
+  // it, or every member install fails with E-PORT-HELD-BY-OTHER-USER.
+  env.APRA_FLEET_PORT = String(ORCHESTRATOR_PORT);
   return env;
 }

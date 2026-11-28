@@ -6,7 +6,146 @@
 import { baselineAsset, baselineStaleness, newestBaselineTag } from '../../fresh-install/lib/baseline.mjs';
 import { QUOTE_LED_CASES } from './commands.mjs';
 
+/** The install guard's refusal (the release binary's `install`, RBS). */
 export const REFUSAL_CODE = 'E-FLEET-SE-RUNNING';
+/** update_member's structuredContent.reason when replace-full refuses under a running sprint (RFS). */
+export const REPLACE_REFUSAL_REASON = 'fleet-se-running';
+
+/**
+ * Known product gap, printed verbatim in the report: on Windows the member's
+ * HTTP server is a scheduled task that runs only in an interactive logon
+ * session, so a member reached only over SSH never gets a running server
+ * (call --list-tools times out auto-starting it). rf-tools is ENV-LIMITED
+ * (non-blocking) with this note ONLY when the failure has the gap's
+ * signature, the server log the error names shows no crash, and the
+ * candidate predates the fix; anything else stays FAIL.
+ */
+export const KNOWN_GAP_MEMBER_SERVER = 'KNOWN-GAP (member server needs an interactive logon on Windows; tracked for v0.4.7)';
+/** The first core version expected to fix the gap: from it on the gap is a plain FAIL. */
+export const KNOWN_GAP_FIXED_IN = [0, 4, 7];
+/** rf-tools keyline when the member's server could not be auto-started (the known gap's signature). */
+export const SERVER_NOT_STARTED = 'SERVER-NOT-STARTED';
+/** rf-tools keyline when the gap's signature came with a crash in the named server log (never excused). */
+export const SERVER_CRASHED = 'SERVER-CRASHED';
+
+/** Whether a candidate version string (e.g. v0.4.6_3e4540) is older than KNOWN_GAP_FIXED_IN; unknown is NOT older. */
+export function predatesGapFix(version) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? ''));
+  if (!m) return false;
+  const v = m.slice(1, 4).map(Number);
+  for (let i = 0; i < 3; i++) if (v[i] !== KNOWN_GAP_FIXED_IN[i]) return v[i] < KNOWN_GAP_FIXED_IN[i];
+  return false;
+}
+
+/**
+ * rf-tools keyline from the FULL `call --list-tools` output (the recorded
+ * `observed` is only its tail, which cuts the error code off): TOOLS-OK;
+ * SERVER-NOT-STARTED when the client's auto-start handed the start to the
+ * service manager and the server never answered, and the candidate predates
+ * the gap's fix; else TOOLS-WRONG. This signature alone cannot tell the gap
+ * from a member-mode server that crashed on start (nothing else in the
+ * regression suite starts a --member http server on Windows), so the driver
+ * also reads the server log the error names (serverLogCrashed).
+ */
+export function toolListKeyline(exitCode, text, candidateVersion) {
+  const t = String(text ?? '');
+  if (exitCode === 0 && /kb_/.test(t) && /code_/.test(t) && !/execute_|register_|credential_/.test(t)) return 'TOOLS-OK';
+  if (exitCode !== 0 && /AUTOSTART_TIMEOUT/.test(t) && /via service manager/.test(t) && predatesGapFix(candidateVersion)) return SERVER_NOT_STARTED;
+  return 'TOOLS-WRONG';
+}
+
+/**
+ * The server log an AUTOSTART_TIMEOUT names ("Check the last server log:
+ * <path>."), as a plain Windows path (JSON escaping undone), or null.
+ */
+export function namedServerLog(text) {
+  const m = /Check the last server log: (.+?\.log)/.exec(String(text ?? ''));
+  const p = m ? m[1].replace(/\\\\/g, '\\') : null;
+  // It goes into a member command: a plain drive path only.
+  return p && /^[A-Za-z]:[\\\w .()-]+\.log$/.test(p) ? p : null;
+}
+
+/**
+ * Whether server log text shows a crash or an error exit:
+ * - the server's own shutdown record (uncaughtException / unhandledRejection),
+ *   a fatal entry, or a nonzero exit;
+ * - Node's default crash text, which ends with the `Node.js vX.Y.Z` footer: a
+ *   throw before the server installs its handlers leaves no record of its
+ *   own, only that text, which the task wrapper appends to data/fleet.log;
+ * - an error-level start-up record (`"level":"error","tag":"startup"`, or its
+ *   stderr mirror `[fleet:error] startup`): a port conflict or an
+ *   unresponsive instance, which exits 0.
+ * A bare error-level record is NOT a crash: the named log can be the `start`
+ * CLI's own, which logs `Start failed` at error level (tag cli) in the gap.
+ * An absent or empty log shows no crash; it does not prove the server never
+ * ran (taskRunState decides that).
+ */
+export function serverLogCrashed(logText) {
+  const t = String(logText ?? '');
+  return /uncaughtException|unhandledRejection|\bfatal\b|exit(?:ed)?(?: with)? code [1-9]|exitCode"?:\s*[1-9]/i.test(t)
+    || /^Node\.js v\d+\.\d+\.\d+\s*$/m.test(t)
+    || t.includes('"level":"error","tag":"startup"')
+    || t.includes('[fleet:error] startup ');
+}
+
+/**
+ * Task Scheduler "Last Result" codes that mean the task never ran its action
+ * (the gap): SCHED_S_TASK_HAS_NOT_RUN, and the run being refused or failing
+ * to log on (no interactive session for an InteractiveToken task).
+ */
+export const TASK_NEVER_RAN_CODES = Object.freeze([
+  0x41303, // 267011 SCHED_S_TASK_HAS_NOT_RUN
+  0x800710e0, // the operator or administrator has refused the request
+  0x80070520, // a specified logon session does not exist
+  0x8007052e, // logon failure: unknown user name or bad password
+]);
+/** SCHED_S_TASK_RUNNING: the action is running (yet the server did not answer /health). */
+export const TASK_RUNNING_CODE = 0x41301;
+
+/**
+ * What the ApraFleet task's "Last Result" (serviceDiagCommand output) says:
+ * 'never-ran' (a TASK_NEVER_RAN_CODES value: the gap), 'running' (alive but
+ * not answering: not the gap), 'exited' (the action ran and ended, any code
+ * including 0: a server that exits is not the gap) or 'unknown' (no task or
+ * no readable Last Result; never excused either). Decimal or 0x hex, signed or not.
+ */
+export function taskRunState(diagText) {
+  const m = /Last Result:\s*(-?0x[0-9a-f]+|-?\d+)/i.exec(String(diagText ?? ''));
+  if (!m) return { state: 'unknown', code: null };
+  const neg = m[1].startsWith('-');
+  const raw = neg ? m[1].slice(1) : m[1];
+  let n = raw.toLowerCase().startsWith('0x') ? parseInt(raw, 16) : Number(raw);
+  if (neg) n = -n;
+  const code = n < 0 ? (n >>> 0) : n; // -2147020576 -> 0x800710E0
+  if (TASK_NEVER_RAN_CODES.includes(code)) return { state: 'never-ran', code };
+  if (code === TASK_RUNNING_CODE) return { state: 'running', code };
+  return { state: 'exited', code };
+}
+
+/**
+ * Files in the member data dir that are one-shot messages, not state, and so
+ * are left out of every "unchanged" / "restored" listing compare:
+ * - service-notice.json: a pending notice for the next service verb. The
+ *   release's first install writes one (its MCP access-restart note, written
+ *   whenever stdout is not a console), the reinstall in the rollback does not
+ *   (the restored access key means nothing changed) and its task
+ *   registration clears a stale one; the release's install guard writes one
+ *   when it refuses (RBS). Losing or gaining it destroys nothing.
+ * - client-autostart.lock: the client auto-start mutex ({pid, at}). A process
+ *   that exits while its auto-start waits for /health leaves it behind (the
+ *   unlink is in a `finally` that process.exit skips): here the idle
+ *   supervisor, whose backlog-member retry keeps auto-starting the member
+ *   server that never answers on an SSH-only Windows member, is stopped by
+ *   replace-full mid-attempt, and the lock rides the moved-aside data/ back
+ *   through the rollback. The next auto-start treats it as stale (dead pid
+ *   or older than its timeout) and removes it: no state.
+ */
+export const TRANSIENT_DATA_FILES = Object.freeze(['service-notice.json', 'client-autostart.lock']);
+
+/** A data dir listing without TRANSIENT_DATA_FILES, sorted. */
+export function stateListing(listing) {
+  return [...(listing ?? [])].filter(x => !TRANSIENT_DATA_FILES.includes(x)).sort();
+}
 
 /**
  * The passes, in run order. `expected` is the outcome the driver must observe;
@@ -29,7 +168,10 @@ export const PASSES = Object.freeze([
       { id: 'rf-replace', title: 'update_member fleet_install replace-full', expect: { exit: 0 } },
       { id: 'rf-version', title: 'member --version equals the candidate', expect: { exit: 0, keyline: '^MATCH$' } },
       { id: 'rf-marker', title: 'member-install.json exists', expect: { exit: 0 } },
-      { id: 'rf-tools', title: 'member tool list: kb_ and code_ present, execute_/register_/credential_ absent', expect: { exit: 0, keyline: '^TOOLS-OK$' } },
+      {
+        id: 'rf-tools', title: 'member tool list: kb_ and code_ present, execute_/register_/credential_ absent', expect: { exit: 0, keyline: '^TOOLS-OK$' },
+        envLimited: [{ platforms: ['windows'], keyline: `^${SERVER_NOT_STARTED}$`, note: KNOWN_GAP_MEMBER_SERVER }],
+      },
     ],
   },
   {
@@ -46,22 +188,34 @@ export const PASSES = Object.freeze([
     ],
   },
   {
-    id: 'RFS', title: 'replace-full with a supervisor running',
-    expected: `replace-full refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped it succeeds`,
+    // Since #872 replace-full STOPS an idle supervisor itself (and says so) and
+    // refuses only while a sprint runs (update_member isError, reason
+    // fleet-se-running). The old "refused because a supervisor runs" check was
+    // obsolete; its equivalent is the refusal under a live sprint plus the
+    // idle-supervisor stop. The sprint is a stand-in process holding a sprint
+    // lock, which is exactly what the install guard's detection counts.
+    id: 'RFS', title: 'replace-full with fleet-sprint work running',
+    expected: `with a supervisor and a sprint running, replace-full refuses (reason ${REPLACE_REFUSAL_REASON}) and makes no destructive change; with only the idle supervisor left it stops that supervisor, says so, and replaces the install with the candidate`,
     refusalKeepsState: true,
+    refusalCode: REPLACE_REFUSAL_REASON,
     steps: [
       { id: 'rfs-baseline-installed', title: 'latest release installed as a full install on the member', expect: { exit: 0 } },
-      { id: 'rfs-supervisor-started', title: 'fleet-sprint supervisor running on the member host', expect: { exit: 0 } },
-      { id: 'rfs-refused', title: `replace-full refused with ${REFUSAL_CODE}`, expect: { exit: 0, keyline: `^${REFUSAL_CODE}$` } },
+      { id: 'rfs-workflows-copied', title: 'the installed fleet-sprint runtime (workflows/ + node_modules/) copied aside for RBS', expect: { exit: 0 } },
+      { id: 'rfs-supervisor-started', title: 'fleet-sprint supervisor running on the member host (seen by fleet-se-check in a later session)', expect: { exit: 0 } },
+      { id: 'rfs-sprint-started', title: 'a running sprint (stand-in holding a sprint lock) seen by fleet-se-check', expect: { exit: 0 } },
+      { id: 'rfs-refused', title: `replace-full refused (isError, reason ${REPLACE_REFUSAL_REASON})`, expect: { exit: 0, keyline: `^${REPLACE_REFUSAL_REASON}$` } },
       { id: 'rfs-unchanged', title: 'binary version, data dir listing and fleet.key hash unchanged after the refusal', expect: { exit: 0, keyline: '^UNCHANGED$' } },
-      { id: 'rfs-supervisor-stopped', title: 'supervisor stopped', expect: { exit: 0 } },
-      { id: 'rfs-replace', title: 'replace-full succeeds after the supervisor is stopped', expect: { exit: 0 } },
+      { id: 'rfs-sprint-stopped', title: 'the sprint ended; the idle supervisor still runs', expect: { exit: 0 } },
+      { id: 'rfs-replace', title: 'replace-full succeeds and reports it stopped the idle supervisor', expect: { exit: 0, keyline: '^IDLE-SUPERVISOR-STOPPED$' } },
+      { id: 'rfs-supervisor-gone', title: 'no supervisor runs after the replacement', expect: { exit: 0 } },
+      { id: 'rfs-version', title: 'member --version equals the candidate', expect: { exit: 0, keyline: '^MATCH$' } },
     ],
   },
   {
     id: 'RBS', title: 'rollback with a supervisor running',
-    expected: `the rollback's guarded reinstall (run alone, so nothing before it can destroy state) refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped the full gated rollback succeeds and restores the release version, the data dir and fleet.key`,
+    expected: `the rollback's guarded reinstall (the release binary's install, run alone, so nothing before it can destroy state) refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped the full gated rollback succeeds and restores the release version, the data dir and fleet.key`,
     refusalKeepsState: true,
+    refusalCode: REFUSAL_CODE,
     requires: 'RFS',
     steps: [
       { id: 'rbs-backup', title: 'the replace-full backup (data/, fleet.key, old binary) is found on the member', expect: { exit: 0 } },
@@ -94,20 +248,20 @@ export function planPasses(ids = PASS_IDS) {
     return {
       id: p.id, title: p.title, expected: p.expected,
       refusalWithoutDestructiveChange: p.refusalKeepsState,
-      refusalCode: p.refusalKeepsState ? REFUSAL_CODE : null,
+      refusalCode: p.refusalKeepsState ? p.refusalCode : null,
       requires: p.requires ?? null,
       steps: p.steps.map(s => s.id),
     };
   });
 }
 
-/** State captured before and after an operation that must have changed nothing. */
+/** State captured before and after an operation that must have changed nothing (TRANSIENT_DATA_FILES ignored). */
 export function compareSnapshots(before, after) {
   const diffs = [];
   if (before.binaryVersion !== after.binaryVersion) diffs.push(`binary version ${before.binaryVersion} -> ${after.binaryVersion}`);
   if (before.fleetKeySha256 !== after.fleetKeySha256) diffs.push('fleet.key hash changed');
-  const b = [...(before.dataListing ?? [])].sort();
-  const a = [...(after.dataListing ?? [])].sort();
+  const b = stateListing(before.dataListing);
+  const a = stateListing(after.dataListing);
   if (b.join('\n') !== a.join('\n')) {
     const added = a.filter(x => !b.includes(x));
     const removed = b.filter(x => !a.includes(x));

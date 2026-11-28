@@ -6,7 +6,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  PASS_IDS, PASSES, REFUSAL_CODE, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
+  PASS_IDS, PASSES, REFUSAL_CODE, REPLACE_REFUSAL_REASON, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
+  KNOWN_GAP_MEMBER_SERVER, SERVER_NOT_STARTED, SERVER_CRASHED, toolListKeyline, namedServerLog, serverLogCrashed, predatesGapFix, taskRunState,
 } from './integration/member-host/lib/scenarios.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,9 +15,12 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildReport } from './integration/member-host/lib/report.mjs';
 import {
-  ROLLBACK_OK, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSteps, rollbackSucceeded,
+  ROLLBACK_OK, dataAsidePath, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSteps, rollbackSucceeded,
 } from './integration/member-host/lib/rollback.mjs';
-import { baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY } from './integration/member-host/lib/commands.mjs';
+import {
+  baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY, SUPERVISOR_COPY_DIR, parseFleetSe, idleSupervisorStoppedNote,
+  sprintStopCommand, serviceDiagCommand, cimProbeCommand, diagLine, supervisorCopyCommand, supervisorDiagCommand, SUPERVISOR_RUNTIME_PACKAGE,
+} from './integration/member-host/lib/commands.mjs';
 
 const pins = JSON.parse(JSON.stringify({
   baselines: {
@@ -31,14 +35,25 @@ describe('member-host scenario plan', () => {
     expect(planPasses().map((p: { id: string }) => p.id)).toEqual(['Q', 'RF', 'RB', 'RFS', 'RBS']);
   });
 
-  it('RFS and RBS expect an E-FLEET-SE-RUNNING refusal with no destructive change; the others do not', () => {
+  it('RFS expects replace-full refused (reason fleet-se-running) and RBS the install guard (E-FLEET-SE-RUNNING), both with no destructive change; the others refuse nothing', () => {
     const plan = planPasses() as Array<{ id: string; refusalWithoutDestructiveChange: boolean; refusalCode: string | null }>;
+    const codes: Record<string, string | null> = { Q: null, RF: null, RB: null, RFS: 'fleet-se-running', RBS: 'E-FLEET-SE-RUNNING' };
     for (const p of plan) {
-      const refusing = p.id === 'RFS' || p.id === 'RBS';
-      expect(p.refusalWithoutDestructiveChange, p.id).toBe(refusing);
-      expect(p.refusalCode, p.id).toBe(refusing ? 'E-FLEET-SE-RUNNING' : null);
+      expect(p.refusalWithoutDestructiveChange, p.id).toBe(codes[p.id] !== null);
+      expect(p.refusalCode, p.id).toBe(codes[p.id]);
     }
     expect(REFUSAL_CODE).toBe('E-FLEET-SE-RUNNING');
+    expect(REPLACE_REFUSAL_REASON).toBe('fleet-se-running');
+  });
+
+  it('RFS refuses under a running sprint, then has replace-full stop the idle supervisor itself and checks the candidate version', () => {
+    const ids = PASSES.find((p: { id: string }) => p.id === 'RFS')!.steps.map((s: { id: string }) => s.id);
+    expect(ids).toEqual([
+      'rfs-baseline-installed', 'rfs-workflows-copied', 'rfs-supervisor-started', 'rfs-sprint-started', 'rfs-refused',
+      'rfs-unchanged', 'rfs-sprint-stopped', 'rfs-replace', 'rfs-supervisor-gone', 'rfs-version',
+    ]);
+    const replace = PASSES.find((p: { id: string }) => p.id === 'RFS')!.steps.find((s: { id: string }) => s.id === 'rfs-replace')!;
+    expect(replace.expect.keyline).toBe('^IDLE-SUPERVISOR-STOPPED$');
   });
 
   it('the refusal passes assert the unchanged snapshot, not just the error code', () => {
@@ -75,6 +90,13 @@ describe('compareSnapshots (no destructive change on refusal)', () => {
     const r = compareSnapshots(base, { ...base, dataListing: ['a.db'] });
     expect(r.unchanged).toBe(false);
     expect(r.diffs[0]).toMatch(/removed: b\.json/);
+  });
+
+  it('a one-shot service-notice.json (the release guard writes one when it refuses) is not a change; anything else still is', () => {
+    expect(compareSnapshots(base, { ...base, dataListing: ['a.db', 'b.json', 'service-notice.json'] }).unchanged).toBe(true);
+    const r = compareSnapshots(base, { ...base, dataListing: ['a.db', 'service-notice.json', 'member-install.json'] });
+    expect(r.unchanged).toBe(false);
+    expect(r.diffs[0]).toMatch(/added: member-install\.json; removed: b\.json/);
   });
 });
 
@@ -137,6 +159,147 @@ describe('verdict mapping (PASS / FAIL / INCONCLUSIVE)', () => {
   it('the checklist covers every pass', () => {
     expect(Object.keys(buildChecklist().passes)).toEqual(PASS_IDS);
   });
+
+  const rfArgs = (toolsKey: string, observed = '') => {
+    const records = okRecords('RF').map((x: { id: string }) => (x.id === 'rf-tools' ? { ...x, exit: 1, keyline: toolsKey, observed } : x));
+    return { passIds: ['RF'], recordsByPass: { RF: records }, startedAt: 's', finishedAt: 'f' };
+  };
+
+  it('rf-tools failing only with the known-gap signature is ENV-LIMITED, not blocking, and named at the top of the report', () => {
+    const r = buildReport(rfArgs(SERVER_NOT_STARTED));
+    expect(r.final).toMatchObject({ verdict: 'PASS', exitCode: 0 });
+    const step = r.passResults[0].steps.find((x: { id: string }) => x.id === 'rf-tools');
+    expect(step).toMatchObject({ status: 'ENV-LIMITED', reason: KNOWN_GAP_MEMBER_SERVER });
+    expect(r.knownGaps).toEqual([`${KNOWN_GAP_MEMBER_SERVER}: windows/RF rf-tools recorded, not counted as a failure`]);
+    const lines = r.markdown.split('\n');
+    expect(lines[lines.findIndex((l: string) => l.startsWith('- Overall: PASS')) + 1]).toBe(`- ${r.knownGaps[0]}`);
+    expect(/[^\x00-\x7f]/.test(r.markdown)).toBe(false);
+    expect(KNOWN_GAP_MEMBER_SERVER).not.toMatch(/apra-fleet-[a-z0-9]+/); // no tracker ids in printed text
+  });
+
+  it('any other rf-tools failure stays FAIL, and a clean run lists no known gap', () => {
+    expect(buildReport(rfArgs('TOOLS-WRONG', 'Server starting via service manager... AUTOSTART')).final.verdict).toBe('FAIL');
+    expect(buildReport(rfArgs(SERVER_CRASHED, 'Server starting via service manager... AUTOSTART')).final.verdict).toBe('FAIL');
+    const ok = buildReport({ passIds: ['RF'], recordsByPass: { RF: okRecords('RF') }, startedAt: 's', finishedAt: 'f' });
+    expect(ok.knownGaps).toEqual([]);
+    expect(ok.markdown).not.toMatch(/KNOWN-GAP/);
+  });
+});
+
+describe('rf-tools classification from the full call --list-tools output', () => {
+  // The real error text of a CI run (JSON-escaped backslashes and all).
+  const gap = String.raw`{"error":{"code":"AUTOSTART_TIMEOUT","message":"Started the apra-fleet HTTP server but it did not answer /health within 45000ms. Check the last server log: C:\\Users\\fleetmember\\.apra-fleet\\data\\logs\\fleet-4540.log.\n'C:\\Users\\fleetmember\\.apra-fleet\\bin\\apra-fleet.exe start' said: Server starting via service manager...\nServer did not start in time. Check logs at: C:\\Users\\fleetmember\\.apra-fleet\\data\\fleet.log"}}`;
+  const cand = 'v0.4.6_3e4540';
+
+  it('TOOLS-OK only for the member tool set; the service-manager auto-start timeout is the known gap; anything else is TOOLS-WRONG', () => {
+    expect(toolListKeyline(0, 'kb_query\ncode_query\n', cand)).toBe('TOOLS-OK');
+    expect(toolListKeyline(0, 'kb_query\ncode_query\nexecute_command\n', cand)).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, gap, cand)).toBe(SERVER_NOT_STARTED);
+    // A timeout without the service-manager start, or another auto-start error, is not the gap.
+    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_TIMEOUT","message":"waiting for another client"}}', cand)).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_VERSION_SKEW"}} via service manager', cand)).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(0, gap, cand)).toBe('TOOLS-WRONG');
+  });
+
+  it('the gap expires: a candidate at or past the fix, or of unknown version, gets no excuse', () => {
+    expect(toolListKeyline(1, gap, 'v0.4.7_abc123')).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, gap, 'v0.5.0')).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, gap, null)).toBe('TOOLS-WRONG');
+    expect(predatesGapFix('v0.4.6_x')).toBe(true);
+    expect(predatesGapFix('v0.4.10')).toBe(false);
+    expect(predatesGapFix('0.3.99')).toBe(true);
+  });
+
+  it('names the server log the error points at (plain drive path only), and spots a crash in it', () => {
+    expect(namedServerLog(gap)).toBe('C:\\Users\\fleetmember\\.apra-fleet\\data\\logs\\fleet-4540.log');
+    expect(namedServerLog('Check the last server log: C:\\x"; rm -rf ~; ".log')).toBeNull();
+    expect(namedServerLog('no log named')).toBeNull();
+    expect(serverLogCrashed('{"level":"error","tag":"shutdown","reason":"uncaughtException","pid":1}')).toBe(true);
+    expect(serverLogCrashed('{"level":"error","tag":"shutdown","reason":"unhandledRejection"}')).toBe(true);
+    expect(serverLogCrashed('FATAL: cannot bind')).toBe(true);
+    expect(serverLogCrashed('server exited with code 3')).toBe(true);
+    expect(serverLogCrashed('== /c/x/fleet.log\ntail: cannot open /c/x/fleet.log for reading: No such file or directory')).toBe(false);
+    expect(serverLogCrashed('{"level":"info","tag":"start","msg":"listening"}')).toBe(false);
+  });
+
+  // Captured verbatim from node v22.19.0: `node -e "Promise.reject(new Error('boom'))"`, exit 1.
+  // A throw before the server installs its handlers leaves only this in data/fleet.log.
+  const NODE_UNHANDLED_REJECTION = [
+    '[eval]:1',
+    "Promise.reject(new Error('boom'))",
+    '               ^',
+    '',
+    'Error: boom',
+    '    at [eval]:1:16',
+    '    at runScriptInThisContext (node:internal/vm:209:10)',
+    '    at node:internal/process/execution:446:12',
+    '    at [eval]-wrapper:6:24',
+    '    at runScriptInContext (node:internal/process/execution:444:60)',
+    '    at evalFunction (node:internal/process/execution:279:30)',
+    '    at evalTypeScript (node:internal/process/execution:291:3)',
+    '    at node:internal/main/eval_string:74:3',
+    '',
+    'Node.js v22.19.0',
+    '',
+  ].join('\r\n');
+  // Captured from node v22.19.0: an ESM import of a missing module (path shortened), exit 1.
+  const NODE_MODULE_NOT_FOUND = [
+    'node:internal/modules/esm/resolve:274',
+    '    throw new ERR_MODULE_NOT_FOUND(',
+    '          ^',
+    '',
+    "Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\\x\\does-not-exist-pkg-xyz' imported from C:\\x\\[eval]",
+    '    at finalizeResolution (node:internal/modules/esm/resolve:274:11)',
+    '    at moduleResolve (node:internal/modules/esm/resolve:859:10)',
+    '    at defaultResolve (node:internal/modules/esm/resolve:983:11) {',
+    "  code: 'ERR_MODULE_NOT_FOUND',",
+    "  url: 'file:///C:/x/does-not-exist-pkg-xyz'",
+    '}',
+    '',
+    'Node.js v22.19.0',
+  ].join('\n');
+  // The shape writeLog (src/utils/log-helpers.ts) emits: ts, level, tag, msg; plus its stderr mirror.
+  const startupRecord = JSON.stringify({ ts: '2026-11-27T12:00:00.000+05:30', level: 'error', tag: 'startup', msg: 'port 7523 is held by another user' });
+  const startFailedRecord = JSON.stringify({ ts: '2026-11-27T12:00:00.000+05:30', level: 'error', tag: 'cli', msg: 'Start failed: Server did not start in time' });
+
+  it('a real Node start-up crash (no server record, only the default crash text) is a crash', () => {
+    expect(serverLogCrashed(`== /c/u/.apra-fleet/data/fleet.log\n${NODE_UNHANDLED_REJECTION}`)).toBe(true);
+    expect(serverLogCrashed(NODE_MODULE_NOT_FOUND)).toBe(true);
+    // And what this node prints right now, not just the captured copies.
+    for (const code of ["Promise.reject(new Error('boom'))", "throw new Error('sync boom')"]) {
+      const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8' });
+      expect(r.status).toBe(1);
+      expect(serverLogCrashed(`${r.stdout}${r.stderr}`)).toBe(true);
+    }
+  });
+
+  it('an error-level start-up record is a crash; the start CLI failing at error level (the gap itself) is not', () => {
+    expect(serverLogCrashed(startupRecord)).toBe(true);
+    expect(serverLogCrashed('[fleet:error] startup port 7523 is held by another user')).toBe(true);
+    expect(serverLogCrashed(`${startFailedRecord}\n[fleet:error] cli Start failed: Server did not start in time`)).toBe(false);
+    expect(serverLogCrashed('Server starting via service manager...\nServer did not start in time. Check logs at: C:\\x\\fleet.log')).toBe(false);
+  });
+
+  it('task Last Result: only never-ran codes are the gap; a run that ended (any code) or still runs is not', () => {
+    const diag = (v: string) => `TASK Status: Ready ; Last Run Time: 11/30/1999 12:00:00 AM ; Last Result: ${v} ; Logon Mode: Interactive only`;
+    expect(taskRunState(diag('267011'))).toEqual({ state: 'never-ran', code: 0x41303 });
+    expect(taskRunState(diag('-2147020576')).state).toBe('never-ran'); // 0x800710E0 refused
+    expect(taskRunState(diag('0x80070520')).state).toBe('never-ran');
+    expect(taskRunState(diag('267009')).state).toBe('running');
+    expect(taskRunState(diag('1'))).toEqual({ state: 'exited', code: 1 });
+    expect(taskRunState(diag('0')).state).toBe('exited');
+    expect(taskRunState('TASK ERROR: The system cannot find the file specified.')).toEqual({ state: 'unknown', code: null });
+  });
+
+  it('the driver classifies from the full output, reads the named log before excusing, and warns loudly', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
+    expect(src).toMatch(/toolListKeyline\(t\.exitCode, t\.exitCode === 0 \? t\.stdout : out\(t\), candVersion\)/);
+    expect(src).toMatch(/const crashed = l\.exitCode !== 0 \|\| serverLogCrashed\(l\.stdout\);/);
+    // Only a positively read never-ran code keeps the gap: unknown, exited and running all FAIL.
+    expect(src).toMatch(/if \(crashed \|\| task\.state !== 'never-ran'\) toolsKey = SERVER_CRASHED;/);
+    expect(src.indexOf('taskRunState(sd.stdout)')).toBeLessThan(src.indexOf("rec('RF', 'rf-tools'"));
+    expect(src).toMatch(/::warning title=member-host known gap::/);
+  });
 });
 
 describe('driver spawns every process with the sandbox env', () => {
@@ -165,20 +328,23 @@ describe('rollback (RB / RBS)', () => {
 
   it('follows the documented order and gates every step on the previous one', () => {
     const steps = rollbackSteps(B);
+    const aside = dataAsidePath(B);
+    expect(aside).toBe(`$HOME/.apra-fleet/data.replaced-${/replace-backup-(.+)$/.exec(B)![1]}`);
     expect(steps[0]).toMatch(/apra-fleet\.exe" uninstall --force --yes$/);
-    expect(steps[1]).toBe('rm -rf "$HOME/.apra-fleet/data"');
-    expect(steps[2]).toBe(`cp -R '${B}/data' "$HOME/.apra-fleet/data"`);
-    expect(steps[3]).toBe(`if [ -e '${B}/fleet.key' ]; then cp '${B}/fleet.key' "$HOME/.apra-fleet/fleet.key"; else rm -f "$HOME/.apra-fleet/fleet.key"; fi`);
-    expect(steps[4]).toBe(guardedReinstallCommand(B));
+    // docs/install.md Rollback: the aside copy; data/ kept if never moved; the backup only when neither exists.
+    expect(steps[1]).toBe(`if [ -d "${aside}" ]; then rm -rf "$HOME/.apra-fleet/data" && mv "${aside}" "$HOME/.apra-fleet/data"; elif [ ! -d "$HOME/.apra-fleet/data" ]; then cp -R '${B}/data' "$HOME/.apra-fleet/data"; fi`);
+    // fleet.key only if missing.
+    expect(steps[2]).toBe(`if [ ! -f "$HOME/.apra-fleet/fleet.key" ] && [ -f '${B}/fleet.key' ]; then cp '${B}/fleet.key' "$HOME/.apra-fleet/fleet.key"; fi`);
+    expect(steps[3]).toBe(guardedReinstallCommand(B));
     const cmd = rollbackCommand(B);
     expect(cmd).toBe(`${steps.join(' && ')} && echo ${ROLLBACK_OK}`);
-    // The only ';' are inside the conditional fleet.key step.
-    expect(cmd.replace(steps[3], '')).not.toMatch(/;/);
+    // The only ';' are inside the two conditional steps.
+    expect(cmd.replace(steps[1], '').replace(steps[2], '')).not.toMatch(/;/);
   });
 
   it('the RBS refusal attempt is the guarded reinstall ALONE: no uninstall, no data removal or restore', () => {
     const probe = guardedReinstallCommand(B);
-    expect(probe).toBe(`chmod +x '${B}/apra-fleet.exe' && '${B}/apra-fleet.exe' install --llm none --force`);
+    expect(probe).toBe(`chmod +x '${B}/apra-fleet.exe' && '${B}/apra-fleet.exe' install --llm claude --force`);
     expect(probe).not.toMatch(/uninstall|rm -rf|cp /);
   });
 
@@ -196,6 +362,17 @@ describe('rollback (RB / RBS)', () => {
     // A rollback that kept the candidate's data or key: non-empty but different.
     const kept = restoreChecks({ preReplace: pre, post: snap({ dataListing: ['agents.json', 'kb', 'member-install.json'], fleetKeySha256: 'k2' }), releaseVersion: 'v0.4.5' });
     expect(kept.data.keyline).toBe('MISMATCH');
+    // The release's first install leaves a one-shot service-notice.json that the rollback's reinstall clears: not state.
+    const withNotice = restoreChecks({ preReplace: snap({ dataListing: [...pre.dataListing, 'service-notice.json'] }), post: snap(), releaseVersion: 'v0.4.5' });
+    expect(withNotice.data.keyline).toBe('MATCH');
+    expect(withNotice.data.detail).toMatch(/ignored: service-notice\.json, client-autostart\.lock/);
+    // The leaked auto-start lock (seen on a real run: after the rollback only) is not state either...
+    const realRun = ['client-autostart.json', 'code-intelligence', 'install-config.json', 'member-access.key'];
+    expect(restoreChecks({ preReplace: snap({ dataListing: realRun }), post: snap({ dataListing: [...realRun, 'client-autostart.lock'] }), releaseVersion: 'v0.4.5' }).data.keyline).toBe('MATCH');
+    // ...but the ledger next to it is: losing it still fails.
+    expect(restoreChecks({ preReplace: snap({ dataListing: realRun }), post: snap({ dataListing: realRun.slice(1) }), releaseVersion: 'v0.4.5' }).data.keyline).toBe('MISMATCH');
+    const lost = restoreChecks({ preReplace: snap({ dataListing: [...pre.dataListing, 'service-notice.json'] }), post: snap({ dataListing: ['agents.json'] }), releaseVersion: 'v0.4.5' });
+    expect(lost.data.keyline).toBe('MISMATCH');
     expect(kept.data.detail).toMatch(/member-install\.json/);
     expect(kept.key.keyline).toBe('MISMATCH');
     expect(restoreChecks({ preReplace: pre, post: snap({ binaryVersion: 'apra-fleet 0.5.0' }), releaseVersion: 'v0.4.5' }).version.keyline).toBe('MISMATCH');
@@ -229,15 +406,25 @@ describe('rollback (RB / RBS)', () => {
     expect(src).not.toMatch(/full-install\.bak/);
     expect(src).toMatch(/preReplaceBy\[pass\] = pre;/);
     expect(src).toMatch(/restoreChecks\(\{ preReplace: preReplaceBy\[pass === 'RB' \? 'RF' : 'RFS'\]/);
-    const start = src.indexOf("await startSupervisor('RBS')");
-    const probe = src.indexOf('guardedReinstallCommand(backup)', start);
+    const start = src.indexOf("await startSupervisor('RBS'");
+    // The probe command is built before the start (the skip record names it); it RUNS after.
+    expect(src).toMatch(/const probe = guardedReinstallCommand\(backup\);/);
+    const probe = src.indexOf('await exec(probe, 300)', start);
     const stop = src.indexOf("await stopSupervisor('RBS')", start);
     const full = src.indexOf('rollbackCommand(backup)', start);
     expect(start).toBeGreaterThan(0);
     expect(probe).toBeGreaterThan(start);
     expect(stop).toBeGreaterThan(probe);
     expect(full).toBeGreaterThan(stop);
-    expect(src).toMatch(/rollbackSucceeded\(r\) \? 0 : 1/);
+    // The rollback's success is its real exit code (structuredContent), not the MCP isError.
+    expect(src).toMatch(/rollbackSucceeded\(\{ isError: r\.exitCode !== 0, text: r\.stdout \}\) \? 0 : 1/);
+  });
+
+  it('exit codes come from execute_command structuredContent, never from isError (a nonzero exit is not an MCP error)', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
+    expect(src).toMatch(/execOutcome\(r\)/);
+    expect(src).toMatch(/rec\(pass, `\$\{pass\.toLowerCase\(\)\}-baseline-installed`, `baseline \$\{installArgs\}`, r\.exitCode/);
+    expect(src).toMatch(/verifyEcho\(c, r\.stdout\)/);
   });
 });
 
@@ -257,7 +444,11 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
     fs.writeFileSync(path.join(backup, 'data', 'agents.json'), '[]');
     fs.writeFileSync(path.join(backup, 'fleet.key'), 'release-key');
     fs.writeFileSync(path.join(backup, 'apra-fleet.exe'), '#!/bin/sh\necho "reinstall $*" >> "$HOME/calls.log"\n', { mode: 0o644 });
-    return { home, mh, backup };
+    // replace-full moved the old data aside under the backup's stamp.
+    const aside = path.join(mh, 'data.replaced-20261125T000000Z');
+    fs.mkdirSync(aside, { recursive: true });
+    fs.writeFileSync(path.join(aside, 'registry.json'), '{}');
+    return { home, mh, backup, aside };
   };
   const runIn = (home: string, cmd: string) => {
     const env = { ...process.env, HOME: home };
@@ -265,29 +456,47 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
     return spawnSync('bash', ['-c', cmd], { env, encoding: 'utf8' });
   };
 
-  it.skipIf(!posixHost)('runs every step in order and restores data/ and fleet.key from the backup', () => {
-    const { home, mh, backup } = setup(0);
+  it.skipIf(!posixHost)('runs every step in order: data/ from the aside copy, an existing fleet.key kept', () => {
+    const { home, mh, backup, aside } = setup(0);
     try {
       const r = runIn(home, rollbackCommand(backup));
       expect(r.status, r.stderr).toBe(0);
       expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
-      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['agents.json']);
-      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('release-key');
-      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm none --force\n');
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['registry.json']);
+      expect(fs.existsSync(aside)).toBe(false);
+      // Restored only if missing: the key the member has stays.
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('candidate-key');
+      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm claude --force\n');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it.skipIf(!posixHost)('a backup without fleet.key: the chain is intact, succeeds, and the candidate key is dropped', () => {
+  it.skipIf(!posixHost)('no aside copy: data/ in place is kept; with no data/ either, the backup is used; a missing fleet.key is restored', () => {
+    const { home, mh, backup, aside } = setup(0);
+    fs.rmSync(aside, { recursive: true });
+    fs.rmSync(path.join(mh, 'fleet.key'));
+    try {
+      expect(runIn(home, rollbackCommand(backup)).status).toBe(0);
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['member-install.json']);
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('release-key');
+      fs.rmSync(path.join(mh, 'data'), { recursive: true });
+      expect(runIn(home, rollbackCommand(backup)).status).toBe(0);
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['agents.json']);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posixHost)('a backup without fleet.key: the chain is intact and succeeds', () => {
     const { home, mh, backup } = setup(0);
     fs.rmSync(path.join(backup, 'fleet.key'));
     try {
       const r = runIn(home, rollbackCommand(backup));
       expect(r.status, r.stderr).toBe(0);
       expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
-      expect(fs.existsSync(path.join(mh, 'fleet.key'))).toBe(false);
-      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm none --force\n');
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('candidate-key');
+      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm claude --force\n');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -326,24 +535,97 @@ describe('member-host baseline install and supervisor start (RFS / RBS)', () => 
     expect(src).not.toMatch(/install --workflows none`/);
   });
 
-  it('the supervisor-started step reports the missing serve.mjs path instead of a generic exit 1', () => {
-    expect(supervisorStartCommand('/m/bin/apra-fleet.exe')).toContain(`[ ! -f "${SUPERVISOR_ENTRY}" ]`);
+  const node = 'C:\\Program Files\\nodejs\\node.exe';
+  const home = 'C:\\Users\\fleetmember';
+
+  it('the supervisor starts detached (job breakaway first), from the installed tree or the RBS copy, with the member profile env', () => {
+    const installed = supervisorStartCommand({ node, home });
+    expect(installed).toContain('[ ! -f "/c/Users/fleetmember/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs" ]');
+    const ps = Buffer.from(/EncodedCommand (\S+)/.exec(installed)![1], 'base64').toString('utf16le');
+    expect(ps).toMatch(/Add-Type -TypeDefinition/);
+    expect(ps).toContain('0x01000000u, 0u'); // CREATE_BREAKAWAY_FROM_JOB, then without it
+    expect(ps).not.toMatch(/Invoke-CimMethod/); // refused with Access denied for a key-auth SSH user
+    expect(ps).toContain('set "USERPROFILE=C:\\Users\\fleetmember"');
+    expect(ps).toContain('"C:\\Users\\fleetmember\\.apra-fleet\\workflows\\fleet-sprint\\bin\\serve.mjs"');
+    expect(supervisorStartCommand({ node, home, fromCopy: true })).toContain(`/c/Users/fleetmember/${SUPERVISOR_COPY_DIR}/workflows/fleet-sprint/bin/serve.mjs`);
+  });
+
+  it('the RBS copy keeps the installed layout: node_modules/ next to workflows/, checked for the package serve.mjs imports', () => {
+    const c = supervisorCopyCommand('$HOME/.apra-fleet');
+    expect(c).toContain(`cp -R "$HOME/.apra-fleet/workflows" "$HOME/${SUPERVISOR_COPY_DIR}/workflows"`);
+    expect(c).toContain(`cp -R "$HOME/.apra-fleet/node_modules" "$HOME/${SUPERVISOR_COPY_DIR}/node_modules"`);
+    expect(c).toContain(`test -d "$HOME/${SUPERVISOR_COPY_DIR}/${SUPERVISOR_RUNTIME_PACKAGE}"`);
+    expect(c).toMatch(/&& echo copied$/);
+  });
+
+  it('a supervisor that was not seen gets its pid liveness (no CIM) and both logs as diagnostics', () => {
+    const d = supervisorDiagCommand(1234);
+    const ps = Buffer.from(/EncodedCommand (\S+)/.exec(d)![1], 'base64').toString('utf16le');
+    expect(ps).toMatch(/Get-Process -Id 1234/);
+    expect(ps).not.toMatch(/Cim/);
+    expect(d).toContain('$HOME/supervisor.log');
+    expect(d).toContain('$HOME/.apra-fleet-se/logs/supervisor.log');
+    expect(supervisorDiagCommand(null)).toMatch(/^echo "PID-NONE/);
+  });
+
+  it('supervisor-started needs the launch pid AND a later fleet-se-check seeing it; a missing serve.mjs is named', () => {
     const out = supervisorStartOutcome(`SUPERVISOR-ENTRY-MISSING: ${SUPERVISOR_ENTRY} does not exist on the member (x)\n`);
     expect(out.exit).toBe(1);
     expect(out.observed).toContain('workflows/fleet-sprint/bin/serve.mjs');
-    expect(supervisorStartOutcome('FLEET_SE supervisor running pid 1')).toMatchObject({ exit: 0 });
-    expect(supervisorStartOutcome('no supervisor').exit).toBe(1);
+    const seen = 'FLEET_SE_CHECK ok\nFLEET_SE supervisor pid=6 port=8787\n';
+    expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5\r\n', seen)).toMatchObject({ exit: 0 });
+    expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5', 'FLEET_SE_CHECK ok\n').exit).toBe(1); // died with the session
+    expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5 breakaway=no\n', seen)).toMatchObject({ exit: 0 });
+    expect(supervisorStartOutcome('LAUNCHED rc=5 pid=0', seen).exit).toBe(1);
+    expect(supervisorStartOutcome('LAUNCHED rc= pid=', seen).exit).toBe(1);
+    // A refused PowerShell call reports the PowerShell message line, not its CategoryInfo tail.
+    const denied = 'Invoke-CimMethod : Access denied\n+ CategoryInfo : PermissionDenied\n+ FullyQualifiedErrorId : HRESULT 0x80041003\n';
+    expect(supervisorStartOutcome(denied).observed).toBe('Invoke-CimMethod : Access denied');
+  });
+
+  const decodePs = (cmd: string) => Buffer.from(/EncodedCommand (\S+)/.exec(cmd)![1], 'base64').toString('utf16le');
+
+  it('stopping the stand-in sprint silences PowerShell progress (no CLIXML on stderr)', () => {
+    expect(decodePs(sprintStopCommand(42))).toMatch(/^\$ProgressPreference = 'SilentlyContinue'; Stop-Process -Id 42 /);
+  });
+
+  it('diagnostics: service state via PowerShell (no MSYS path mangling) and the guard\'s own CIM probe', () => {
+    const diag = decodePs(serviceDiagCommand());
+    expect(diag).toContain('schtasks.exe /query /tn ApraFleet /v /fo LIST');
+    expect(diag).toContain("reg.exe query 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' /v ApraFleet");
+    expect(diag).toContain("-split '\\r?\\n'");
+    const cim = decodePs(cimProbeCommand(7680));
+    expect(cim).toContain('Get-CimInstance Win32_Process -Filter "ProcessId=7680" -ErrorAction Stop');
+    expect(cim).toContain("'CIM-ERR ' + $_.Exception.Message");
+    expect(() => cimProbeCommand('7; calc')).toThrow(/bad pid/);
+    expect(diagLine('#< CLIXML\r\nTASK a\r\n<Objs x>\r\n\r\nRUNKEY b')).toBe('TASK a | RUNKEY b');
+  });
+
+  it('a refusal attempt whose precondition failed is recorded FAIL and never run', () => {
+    const src = runSrc();
+    expect(src).toMatch(/if \(sprintSeen\) \{[\s\S]*?await replaceFull\(\)[\s\S]*?\} else \{\s*skipped\('RFS', 'rfs-refused'/);
+    expect(src).toMatch(/if \(await startSupervisor\('RBS', true\)\) \{[\s\S]*?await exec\(probe, 300\)[\s\S]*?\} else \{\s*skipped\('RBS', 'rbs-refused'/);
+    // The release's workflows/ is copied right after its install, before any replace-full can remove it.
+    expect(src.indexOf("'rfs-workflows-copied'")).toBeLessThan(src.indexOf("await startSupervisor('RFS')"));
+  });
+
+  it('parses fleet-se-check and recognizes the replace-full idle-supervisor note', () => {
+    expect(parseFleetSe('FLEET_SE_CHECK ok\r\nFLEET_SE supervisor pid=10 port=8787\nFLEET_SE sprint pid=42 id=x\n'))
+      .toEqual({ ok: true, supervisor: { pid: 10, port: 8787 }, sprints: [42] });
+    expect(parseFleetSe('Error: unknown option').ok).toBe(false);
+    expect(idleSupervisorStoppedNote('...; the idle fleet-sprint supervisor (port 8787) was stopped in step 0; it was started by hand')).toBe(true);
+    expect(idleSupervisorStoppedNote('replaced the apra-fleet v0.4.5 full install')).toBe(false);
   });
 
   it.skipIf(!(process.platform === 'linux' || process.platform === 'darwin'))('on a real bash with no serve.mjs the command exits non-zero naming the path', () => {
-    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'member-host-sup-')));
+    const tmpHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'member-host-sup-')));
     try {
-      const r = spawnSync('bash', ['-c', supervisorStartCommand('/nonexistent/apra-fleet.exe')], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+      const r = spawnSync('bash', ['-c', supervisorStartCommand({ node: 'node', home: tmpHome })], { env: { ...process.env, HOME: tmpHome }, encoding: 'utf8' });
       expect(r.status).toBe(1);
       expect(r.stdout).toContain('.apra-fleet/workflows/fleet-sprint/bin/serve.mjs');
       expect(supervisorStartOutcome(r.stdout).observed).toContain('SUPERVISOR-ENTRY-MISSING');
     } finally {
-      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   });
 });

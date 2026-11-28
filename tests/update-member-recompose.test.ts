@@ -159,6 +159,27 @@ describe('update_member re-composes permissions after a member install/upgrade',
     expect(mockCompose).not.toHaveBeenCalled();
   });
 
+  it.each([['none', 'replace-full'], ['codex', 'auto'], ['agy', 'auto']] as const)(
+    '%s: an explicit fleet_install %s that installs nothing fails the call (never a silent success)',
+    async (provider, mode) => {
+      const w: World = { installed: 'v0.4.3', log: [] };
+      __setMemberFleetMcpDeps(fakeDeps(w));
+      const a = remoteMember({ llmProvider: provider, ...(provider === 'agy' ? { agyProjectId: '1afd6dbb-498f-4918-a9d9-6da64b75a204' } : {}) });
+      const result = await updateMember({ member_id: a.id, fleet_install: mode } as any);
+      expect(installs(w)).toEqual([]);
+      expect(typeof result).toBe('object');
+      const r = result as { isError: boolean; text: string; structuredContent: Record<string, unknown> };
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(new RegExp(`^ERROR: fleet_install "${mode}" did not happen`));
+      expect(r.structuredContent).toMatchObject({
+        error: 'fleet-install-not-done', fleet_install: mode,
+        reason: provider === 'agy' ? 'no-per-project-mcp' : 'provider-unsupported',
+        memberUpdated: true, memberId: a.id,
+      });
+      expect(String(r.structuredContent.detail)).toContain(`provider is "${provider}"`);
+    },
+  );
+
   it('an up-to-date member already recorded available whose allow list has the rules is not re-composed', async () => {
     const w: World = { installed: VERSION, log: [] };
     __setMemberFleetMcpDeps(fakeDeps(w));

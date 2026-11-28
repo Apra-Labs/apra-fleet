@@ -10,8 +10,9 @@ name: Regression - install/upgrade proof
 # localhost OpenSSH server with Git Bash as its default shell is the member.
 # Passes: Q (quote-led commands reach the member with the exact argv), RF
 # (update_member replace-full from the latest release), RB (forced rollback),
-# RFS and RBS (the same with a fleet-sprint supervisor running: must refuse
-# with E-FLEET-SE-RUNNING and change nothing, then succeed once it is stopped).
+# RFS (replace-full refuses while a sprint runs and changes nothing, then stops
+# the idle supervisor itself) and RBS (the rollback's reinstall refuses with
+# E-FLEET-SE-RUNNING under a supervisor, then succeeds once it is stopped).
 #
 # Runner-minute caps: every job that can land on a macOS runner has an explicit
 # timeout-minutes, because macOS runners starved on the nightlies of 11-18,
