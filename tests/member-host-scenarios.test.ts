@@ -365,7 +365,12 @@ describe('rollback (RB / RBS)', () => {
     // The release's first install leaves a one-shot service-notice.json that the rollback's reinstall clears: not state.
     const withNotice = restoreChecks({ preReplace: snap({ dataListing: [...pre.dataListing, 'service-notice.json'] }), post: snap(), releaseVersion: 'v0.4.5' });
     expect(withNotice.data.keyline).toBe('MATCH');
-    expect(withNotice.data.detail).toMatch(/ignored: service-notice\.json/);
+    expect(withNotice.data.detail).toMatch(/ignored: service-notice\.json, client-autostart\.lock/);
+    // The leaked auto-start lock (seen on a real run: after the rollback only) is not state either...
+    const realRun = ['client-autostart.json', 'code-intelligence', 'install-config.json', 'member-access.key'];
+    expect(restoreChecks({ preReplace: snap({ dataListing: realRun }), post: snap({ dataListing: [...realRun, 'client-autostart.lock'] }), releaseVersion: 'v0.4.5' }).data.keyline).toBe('MATCH');
+    // ...but the ledger next to it is: losing it still fails.
+    expect(restoreChecks({ preReplace: snap({ dataListing: realRun }), post: snap({ dataListing: realRun.slice(1) }), releaseVersion: 'v0.4.5' }).data.keyline).toBe('MISMATCH');
     const lost = restoreChecks({ preReplace: snap({ dataListing: [...pre.dataListing, 'service-notice.json'] }), post: snap({ dataListing: ['agents.json'] }), releaseVersion: 'v0.4.5' });
     expect(lost.data.keyline).toBe('MISMATCH');
     expect(kept.data.detail).toMatch(/member-install\.json/);

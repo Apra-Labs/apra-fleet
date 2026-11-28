@@ -131,8 +131,16 @@ export function taskRunState(diagText) {
  *   (the restored access key means nothing changed) and its task
  *   registration clears a stale one; the release's install guard writes one
  *   when it refuses (RBS). Losing or gaining it destroys nothing.
+ * - client-autostart.lock: the client auto-start mutex ({pid, at}). A process
+ *   that exits while its auto-start waits for /health leaves it behind (the
+ *   unlink is in a `finally` that process.exit skips): here the idle
+ *   supervisor, whose backlog-member retry keeps auto-starting the member
+ *   server that never answers on an SSH-only Windows member, is stopped by
+ *   replace-full mid-attempt, and the lock rides the moved-aside data/ back
+ *   through the rollback. The next auto-start treats it as stale (dead pid
+ *   or older than its timeout) and removes it: no state.
  */
-export const TRANSIENT_DATA_FILES = Object.freeze(['service-notice.json']);
+export const TRANSIENT_DATA_FILES = Object.freeze(['service-notice.json', 'client-autostart.lock']);
 
 /** A data dir listing without TRANSIENT_DATA_FILES, sorted. */
 export function stateListing(listing) {

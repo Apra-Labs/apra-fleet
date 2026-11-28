@@ -73,8 +73,11 @@ must prove nothing changed.
 
 `service-notice.json` in the data dir is a one-shot notice, not state: the
 release's first install writes one, the rollback's reinstall clears it, and
-the release guard writes one when it refuses. Every listing compare (RB/RBS
-data, RFS/RBS unchanged) leaves it out and says so.
+the release guard writes one when it refuses. `client-autostart.lock` is the
+client auto-start mutex: a process that exits mid auto-start leaves it behind
+(the idle supervisor stopped by replace-full while it waits on the member
+server), and the next auto-start removes it as stale. Every listing compare
+(RB/RBS data, RFS/RBS unchanged) leaves both out and says so.
 
 Known gap: on Windows the member's server is a scheduled task that runs only
 in an interactive logon session, so a member reached only over SSH has no
