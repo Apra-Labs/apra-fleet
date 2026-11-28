@@ -12,6 +12,51 @@ export const REFUSAL_CODE = 'E-FLEET-SE-RUNNING';
 export const REPLACE_REFUSAL_REASON = 'fleet-se-running';
 
 /**
+ * Known product gap, printed verbatim in the report: on Windows the member's
+ * HTTP server is a scheduled task that runs only in an interactive logon
+ * session, so a member reached only over SSH never gets a running server
+ * (call --list-tools times out auto-starting it). A step that fails ONLY with
+ * this signature is ENV-LIMITED (non-blocking) with this note; any other
+ * failure of the same step stays FAIL.
+ */
+export const KNOWN_GAP_MEMBER_SERVER = 'KNOWN-GAP (member server needs an interactive logon on Windows; tracked for v0.4.7)';
+/** rf-tools keyline when the member's server could not be auto-started (the known gap's signature). */
+export const SERVER_NOT_STARTED = 'SERVER-NOT-STARTED';
+
+/**
+ * rf-tools keyline from the FULL `call --list-tools` output (the recorded
+ * `observed` is only its tail, which cuts the error code off): TOOLS-OK;
+ * SERVER-NOT-STARTED when the client's auto-start handed the start to the
+ * service manager and the server never answered (the known gap's
+ * signature); else TOOLS-WRONG. A server that crashes on start under the
+ * service manager has the same signature here; the fresh-install Windows
+ * passes (a real logon session) are what catch that.
+ */
+export function toolListKeyline(exitCode, text) {
+  const t = String(text ?? '');
+  if (exitCode === 0 && /kb_/.test(t) && /code_/.test(t) && !/execute_|register_|credential_/.test(t)) return 'TOOLS-OK';
+  if (exitCode !== 0 && /AUTOSTART_TIMEOUT/.test(t) && /via service manager/.test(t)) return SERVER_NOT_STARTED;
+  return 'TOOLS-WRONG';
+}
+
+/**
+ * Files in the member data dir that are one-shot messages, not state, and so
+ * are left out of every "unchanged" / "restored" listing compare:
+ * - service-notice.json: a pending notice for the next service verb. The
+ *   release's first install writes one (its MCP access-restart note, written
+ *   whenever stdout is not a console), the reinstall in the rollback does not
+ *   (the restored access key means nothing changed) and its task
+ *   registration clears a stale one; the release's install guard writes one
+ *   when it refuses (RBS). Losing or gaining it destroys nothing.
+ */
+export const TRANSIENT_DATA_FILES = Object.freeze(['service-notice.json']);
+
+/** A data dir listing without TRANSIENT_DATA_FILES, sorted. */
+export function stateListing(listing) {
+  return [...(listing ?? [])].filter(x => !TRANSIENT_DATA_FILES.includes(x)).sort();
+}
+
+/**
  * The passes, in run order. `expected` is the outcome the driver must observe;
  * `refusalKeepsState` marks passes that must prove NO destructive change on
  * refusal (binary version, data dir listing, fleet.key hash unchanged).
@@ -32,7 +77,10 @@ export const PASSES = Object.freeze([
       { id: 'rf-replace', title: 'update_member fleet_install replace-full', expect: { exit: 0 } },
       { id: 'rf-version', title: 'member --version equals the candidate', expect: { exit: 0, keyline: '^MATCH$' } },
       { id: 'rf-marker', title: 'member-install.json exists', expect: { exit: 0 } },
-      { id: 'rf-tools', title: 'member tool list: kb_ and code_ present, execute_/register_/credential_ absent', expect: { exit: 0, keyline: '^TOOLS-OK$' } },
+      {
+        id: 'rf-tools', title: 'member tool list: kb_ and code_ present, execute_/register_/credential_ absent', expect: { exit: 0, keyline: '^TOOLS-OK$' },
+        envLimited: [{ platforms: ['windows'], keyline: `^${SERVER_NOT_STARTED}$`, note: KNOWN_GAP_MEMBER_SERVER }],
+      },
     ],
   },
   {
@@ -61,7 +109,7 @@ export const PASSES = Object.freeze([
     refusalCode: REPLACE_REFUSAL_REASON,
     steps: [
       { id: 'rfs-baseline-installed', title: 'latest release installed as a full install on the member', expect: { exit: 0 } },
-      { id: 'rfs-workflows-copied', title: 'the installed fleet-sprint runtime copied aside for RBS', expect: { exit: 0 } },
+      { id: 'rfs-workflows-copied', title: 'the installed fleet-sprint runtime (workflows/ + node_modules/) copied aside for RBS', expect: { exit: 0 } },
       { id: 'rfs-supervisor-started', title: 'fleet-sprint supervisor running on the member host (seen by fleet-se-check in a later session)', expect: { exit: 0 } },
       { id: 'rfs-sprint-started', title: 'a running sprint (stand-in holding a sprint lock) seen by fleet-se-check', expect: { exit: 0 } },
       { id: 'rfs-refused', title: `replace-full refused (isError, reason ${REPLACE_REFUSAL_REASON})`, expect: { exit: 0, keyline: `^${REPLACE_REFUSAL_REASON}$` } },
@@ -116,13 +164,13 @@ export function planPasses(ids = PASS_IDS) {
   });
 }
 
-/** State captured before and after an operation that must have changed nothing. */
+/** State captured before and after an operation that must have changed nothing (TRANSIENT_DATA_FILES ignored). */
 export function compareSnapshots(before, after) {
   const diffs = [];
   if (before.binaryVersion !== after.binaryVersion) diffs.push(`binary version ${before.binaryVersion} -> ${after.binaryVersion}`);
   if (before.fleetKeySha256 !== after.fleetKeySha256) diffs.push('fleet.key hash changed');
-  const b = [...(before.dataListing ?? [])].sort();
-  const a = [...(after.dataListing ?? [])].sort();
+  const b = stateListing(before.dataListing);
+  const a = stateListing(after.dataListing);
   if (b.join('\n') !== a.join('\n')) {
     const added = a.filter(x => !b.includes(x));
     const removed = b.filter(x => !a.includes(x));

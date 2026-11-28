@@ -9,6 +9,8 @@
 // previous version from the backup's binary. Every member command here is a
 // bash string for the Git Bash member shell.
 
+import { TRANSIENT_DATA_FILES, stateListing } from './scenarios.mjs';
+
 export const MEMBER_FLEET_DIR = '$HOME/.apra-fleet';
 export const BACKUP_GLOB = '$HOME/.apra-fleet-replace-backup-*';
 export const ROLLBACK_OK = 'ROLLBACK-OK';
@@ -83,7 +85,7 @@ export function rollbackSucceeded(result) {
 /**
  * Restore checks after a rollback, against the snapshot taken right before
  * replace-full (preReplace): the release version, the SAME data dir listing
- * and the SAME fleet.key hash. A missing pre-replace snapshot, or an empty
+ * (one-shot notices, TRANSIENT_DATA_FILES, left out) and the SAME fleet.key hash. A missing pre-replace snapshot, or an empty
  * data listing on it, is a MISMATCH -- a rollback can only be shown to restore
  * what was recorded before. An empty fleet.key hash means the key was ABSENT
  * (it is created lazily): absent before and absent after is a MATCH; absent
@@ -102,12 +104,14 @@ export function restoreChecks({ preReplace, post, releaseVersion }) {
     out.key = { keyline: 'MISMATCH', detail: why };
     return out;
   }
-  const want = [...(preReplace.dataListing ?? [])].sort();
-  const got = [...(post?.dataListing ?? [])].sort();
+  // One-shot notices (TRANSIENT_DATA_FILES) are not state a rollback restores.
+  const want = stateListing(preReplace.dataListing);
+  const got = stateListing(post?.dataListing);
   const dataOk = want.length > 0 && want.join('\n') === got.join('\n');
+  const ignored = `(ignored: ${TRANSIENT_DATA_FILES.join(', ')})`;
   out.data = {
     keyline: dataOk ? 'MATCH' : 'MISMATCH',
-    detail: dataOk ? got.join(',') : `before replace-full: [${want.join(',')}]; after rollback: [${got.join(',')}]`,
+    detail: dataOk ? `${got.join(',')} ${ignored}` : `before replace-full: [${want.join(',')}]; after rollback: [${got.join(',')}] ${ignored}`,
   };
   const keyBefore = String(preReplace.fleetKeySha256 ?? '');
   const keyAfter = String(post?.fleetKeySha256 ?? '');

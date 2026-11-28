@@ -44,8 +44,13 @@ How the driver talks to the member:
   rollback reinstalls with `--llm claude`, the member's provider, as the
   product's own rollback steps do. The candidate's own `fleet-se-check`,
   copied to the member home, detects them (the release binary has no such verb).
-- RFS copies the release's `workflows/` aside right after installing it; RBS
-  starts its supervisor from that copy (a member install has no fleet-sprint).
+- RFS copies the release's `workflows/` and `node_modules/` (same layout) to
+  `~/supervisor-runtime` right after installing it; RBS starts its supervisor
+  from that copy (a member install has no fleet-sprint). serve.mjs imports
+  bare `@apralabs/*` packages that resolve only from a `node_modules/` next to
+  `workflows/`. A supervisor that is not seen gets report notes: pid alive
+  (Get-Process), `~/supervisor.log` size and tail, and the tail of the
+  supervisor's own `~/.apra-fleet-se/logs/supervisor.log`.
 - A refusal attempt runs only when its precondition step passed (RFS: the
   sprint was detected; RBS: the supervisor is up). Otherwise it is recorded
   FAIL (`SKIPPED`) and not run, so a non-refusal cannot replace or reinstall
@@ -63,6 +68,19 @@ taken right before that pass's replace-full. RBS's refusal attempt runs only
 the guarded step (the old binary's reinstall) with the supervisor running, so
 an unguarded uninstall or data restore can never run during the attempt that
 must prove nothing changed.
+
+`service-notice.json` in the data dir is a one-shot notice, not state: the
+release's first install writes one, the rollback's reinstall clears it, and
+the release guard writes one when it refuses. Every listing compare (RB/RBS
+data, RFS/RBS unchanged) leaves it out and says so.
+
+Known gap: on Windows the member's server is a scheduled task that runs only
+in an interactive logon session, so a member reached only over SSH has no
+running server. `rf-tools` failing with exactly that signature (keyline
+`SERVER-NOT-STARTED`: the auto-start handed off to the service manager and
+timed out) is ENV-LIMITED with the note `KNOWN-GAP (member server needs an
+interactive logon on Windows; tracked for v0.4.7)`, listed under Overall at
+the top of report.md and as a CI warning. Any other `rf-tools` failure is FAIL.
 
 A stale or missing release baseline is INCONCLUSIVE (exit 3), never PASS. Every spawned process gets HOME,
 USERPROFILE and GIT_CONFIG_GLOBAL pointed at a temp sandbox.

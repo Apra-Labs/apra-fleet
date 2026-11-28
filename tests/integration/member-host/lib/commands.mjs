@@ -78,11 +78,29 @@ export const SUPERVISOR_PORT = 8787;
 export const SUPERVISOR_ENTRY = '$HOME/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs';
 export const SUPERVISOR_MISSING_MARKER = 'SUPERVISOR-ENTRY-MISSING';
 /**
- * Where RFS copies the baseline's installed workflows/ before its
+ * Where RFS copies the baseline's fleet-sprint runtime before its
  * replace-full: the member install that replaces the full install carries no
- * fleet-sprint, so RBS starts its supervisor from this copy.
+ * fleet-sprint, so RBS starts its supervisor from this copy. The copy keeps
+ * the installed layout (workflows/ next to node_modules/): serve.mjs imports
+ * bare @apralabs/* packages, which Node resolves by walking up from the
+ * script to <install>/node_modules. A copy of workflows/ alone cannot load.
  */
-export const SUPERVISOR_COPY_DIR = 'supervisor-workflows';
+export const SUPERVISOR_COPY_DIR = 'supervisor-runtime';
+/** What the copy must contain for serve.mjs to load (relative to the copy root). */
+export const SUPERVISOR_COPY_PARTS = Object.freeze(['workflows', 'node_modules']);
+/** A package serve.mjs imports (via bin/cli.mjs); its presence proves node_modules was copied. */
+export const SUPERVISOR_RUNTIME_PACKAGE = 'node_modules/@apralabs/apra-fleet-workflow';
+
+/**
+ * Copies the installed fleet-sprint runtime (workflows/ + node_modules/, the
+ * same relative layout) to ~/SUPERVISOR_COPY_DIR and prints `copied` only
+ * when serve.mjs and the runtime package it imports are both in the copy.
+ */
+export function supervisorCopyCommand(fleetHome = '$HOME/.apra-fleet') {
+  const dst = `$HOME/${SUPERVISOR_COPY_DIR}`;
+  const copies = SUPERVISOR_COPY_PARTS.map(p => `cp -R "${fleetHome}/${p}" "${dst}/${p}"`).join(' && ');
+  return `rm -rf "${dst}" && mkdir -p "${dst}" && ${copies} && test -f "${dst}/workflows/fleet-sprint/bin/serve.mjs" && test -d "${dst}/${SUPERVISOR_RUNTIME_PACKAGE}" && echo copied`;
+}
 /** The candidate installer, copied to the member home to run its read-only `fleet-se-check`. */
 export const CHECK_BIN = 'candidate-check.exe';
 export const SPRINT_LOCK_NAME = 'member-host-standin.lock';
@@ -146,7 +164,7 @@ export const NODE_PATH_COMMAND = 'cygpath -w "$(command -v node)"';
 /** Windows path of serve.mjs: the installed tree, or RFS's copy of it. */
 export function supervisorServePath(home, fromCopy) {
   return fromCopy
-    ? winJoin(home, SUPERVISOR_COPY_DIR, 'fleet-sprint', 'bin', 'serve.mjs')
+    ? winJoin(home, SUPERVISOR_COPY_DIR, 'workflows', 'fleet-sprint', 'bin', 'serve.mjs')
     : winJoin(home, '.apra-fleet', 'workflows', 'fleet-sprint', 'bin', 'serve.mjs');
 }
 
@@ -308,6 +326,23 @@ export function cimProbeCommand(pid) {
     `try { $c = (Get-CimInstance Win32_Process -Filter "ProcessId=${n}" -ErrorAction Stop).CommandLine; ` +
     "if ($c) { 'CIM-OK ' + $c } else { 'CIM-EMPTY no command line returned' } } catch { 'CIM-ERR ' + $_.Exception.Message }; exit 0",
   );
+}
+
+/**
+ * Why a supervisor launch was not seen (report note only): whether the
+ * launched pid is still alive (Get-Process, not CIM), the size of the
+ * redirect log <home>/supervisor.log, its tail, and the tail of the
+ * supervisor's own log (~/.apra-fleet-se/logs/supervisor.log; the harness
+ * launches it without FLEET_SE_DATA_DIR).
+ */
+export function supervisorDiagCommand(pid) {
+  const alive = pid && Number(pid) > 0
+    ? `${powershellEncoded(`$ProgressPreference = 'SilentlyContinue'; $p = Get-Process -Id ${checkPid(pid)} -ErrorAction SilentlyContinue; if ($p) { 'PID-ALIVE ' + $p.ProcessName } else { 'PID-GONE' }; exit 0`)}; `
+    : 'echo "PID-NONE no pid was launched"; ';
+  const own = '"$HOME/.apra-fleet-se/logs/supervisor.log"';
+  return `${alive}` +
+    'printf "REDIRECT-LOG %s\\n" "$(wc -c "$HOME/supervisor.log" 2>&1)";tail -n 5 "$HOME/supervisor.log" 2>&1 | sed "s/^/REDIRECT-TAIL /"; ' +
+    `tail -n 8 ${own} 2>&1 | sed "s/^/OWN-LOG /"; exit 0`;
 }
 
 /** One report-note line from a diagnostic's output (single line, CLIXML noise dropped, bounded). */

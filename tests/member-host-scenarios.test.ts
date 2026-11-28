@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PASS_IDS, PASSES, REFUSAL_CODE, REPLACE_REFUSAL_REASON, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
+  KNOWN_GAP_MEMBER_SERVER, SERVER_NOT_STARTED, toolListKeyline,
 } from './integration/member-host/lib/scenarios.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,7 +19,7 @@ import {
 } from './integration/member-host/lib/rollback.mjs';
 import {
   baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY, SUPERVISOR_COPY_DIR, parseFleetSe, idleSupervisorStoppedNote,
-  sprintStopCommand, serviceDiagCommand, cimProbeCommand, diagLine,
+  sprintStopCommand, serviceDiagCommand, cimProbeCommand, diagLine, supervisorCopyCommand, supervisorDiagCommand, SUPERVISOR_RUNTIME_PACKAGE,
 } from './integration/member-host/lib/commands.mjs';
 
 const pins = JSON.parse(JSON.stringify({
@@ -90,6 +91,13 @@ describe('compareSnapshots (no destructive change on refusal)', () => {
     expect(r.unchanged).toBe(false);
     expect(r.diffs[0]).toMatch(/removed: b\.json/);
   });
+
+  it('a one-shot service-notice.json (the release guard writes one when it refuses) is not a change; anything else still is', () => {
+    expect(compareSnapshots(base, { ...base, dataListing: ['a.db', 'b.json', 'service-notice.json'] }).unchanged).toBe(true);
+    const r = compareSnapshots(base, { ...base, dataListing: ['a.db', 'service-notice.json', 'member-install.json'] });
+    expect(r.unchanged).toBe(false);
+    expect(r.diffs[0]).toMatch(/added: member-install\.json; removed: b\.json/);
+  });
 });
 
 describe('baseline resolution: stale or missing is INCONCLUSIVE', () => {
@@ -151,6 +159,50 @@ describe('verdict mapping (PASS / FAIL / INCONCLUSIVE)', () => {
   it('the checklist covers every pass', () => {
     expect(Object.keys(buildChecklist().passes)).toEqual(PASS_IDS);
   });
+
+  const rfArgs = (toolsKey: string, observed = '') => {
+    const records = okRecords('RF').map((x: { id: string }) => (x.id === 'rf-tools' ? { ...x, exit: 1, keyline: toolsKey, observed } : x));
+    return { passIds: ['RF'], recordsByPass: { RF: records }, startedAt: 's', finishedAt: 'f' };
+  };
+
+  it('rf-tools failing only with the known-gap signature is ENV-LIMITED, not blocking, and named at the top of the report', () => {
+    const r = buildReport(rfArgs(SERVER_NOT_STARTED));
+    expect(r.final).toMatchObject({ verdict: 'PASS', exitCode: 0 });
+    const step = r.passResults[0].steps.find((x: { id: string }) => x.id === 'rf-tools');
+    expect(step).toMatchObject({ status: 'ENV-LIMITED', reason: KNOWN_GAP_MEMBER_SERVER });
+    expect(r.knownGaps).toEqual([`${KNOWN_GAP_MEMBER_SERVER}: windows/RF rf-tools recorded, not counted as a failure`]);
+    const lines = r.markdown.split('\n');
+    expect(lines[lines.findIndex((l: string) => l.startsWith('- Overall: PASS')) + 1]).toBe(`- ${r.knownGaps[0]}`);
+    expect(/[^\x00-\x7f]/.test(r.markdown)).toBe(false);
+    expect(KNOWN_GAP_MEMBER_SERVER).not.toMatch(/apra-fleet-[a-z0-9]+/); // no tracker ids in printed text
+  });
+
+  it('any other rf-tools failure stays FAIL, and a clean run lists no known gap', () => {
+    expect(buildReport(rfArgs('TOOLS-WRONG', 'Server starting via service manager... AUTOSTART')).final.verdict).toBe('FAIL');
+    const ok = buildReport({ passIds: ['RF'], recordsByPass: { RF: okRecords('RF') }, startedAt: 's', finishedAt: 'f' });
+    expect(ok.knownGaps).toEqual([]);
+    expect(ok.markdown).not.toMatch(/KNOWN-GAP/);
+  });
+});
+
+describe('rf-tools classification from the full call --list-tools output', () => {
+  const gap = 'Error: {"error":{"code":"AUTOSTART_TIMEOUT","message":"Started the apra-fleet HTTP server but it did not answer /health ... said: Server starting via service manager...\\nServer did not start in time."}}';
+
+  it('TOOLS-OK only for the member tool set; the service-manager auto-start timeout is the known gap; anything else is TOOLS-WRONG', () => {
+    expect(toolListKeyline(0, 'kb_query\ncode_query\n')).toBe('TOOLS-OK');
+    expect(toolListKeyline(0, 'kb_query\ncode_query\nexecute_command\n')).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, gap)).toBe(SERVER_NOT_STARTED);
+    // A timeout without the service-manager start, or another auto-start error, is not the gap.
+    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_TIMEOUT","message":"waiting for another client"}}')).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(1, '{"error":{"code":"AUTOSTART_VERSION_SKEW"}} via service manager')).toBe('TOOLS-WRONG');
+    expect(toolListKeyline(0, gap)).toBe('TOOLS-WRONG');
+  });
+
+  it('the driver classifies from the full output, not the recorded tail, and warns loudly', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
+    expect(src).toMatch(/toolListKeyline\(t\.exitCode, t\.exitCode === 0 \? t\.stdout : out\(t\)\)/);
+    expect(src).toMatch(/::warning title=member-host known gap::/);
+  });
 });
 
 describe('driver spawns every process with the sandbox env', () => {
@@ -210,6 +262,12 @@ describe('rollback (RB / RBS)', () => {
     // A rollback that kept the candidate's data or key: non-empty but different.
     const kept = restoreChecks({ preReplace: pre, post: snap({ dataListing: ['agents.json', 'kb', 'member-install.json'], fleetKeySha256: 'k2' }), releaseVersion: 'v0.4.5' });
     expect(kept.data.keyline).toBe('MISMATCH');
+    // The release's first install leaves a one-shot service-notice.json that the rollback's reinstall clears: not state.
+    const withNotice = restoreChecks({ preReplace: snap({ dataListing: [...pre.dataListing, 'service-notice.json'] }), post: snap(), releaseVersion: 'v0.4.5' });
+    expect(withNotice.data.keyline).toBe('MATCH');
+    expect(withNotice.data.detail).toMatch(/ignored: service-notice\.json/);
+    const lost = restoreChecks({ preReplace: snap({ dataListing: [...pre.dataListing, 'service-notice.json'] }), post: snap({ dataListing: ['agents.json'] }), releaseVersion: 'v0.4.5' });
+    expect(lost.data.keyline).toBe('MISMATCH');
     expect(kept.data.detail).toMatch(/member-install\.json/);
     expect(kept.key.keyline).toBe('MISMATCH');
     expect(restoreChecks({ preReplace: pre, post: snap({ binaryVersion: 'apra-fleet 0.5.0' }), releaseVersion: 'v0.4.5' }).version.keyline).toBe('MISMATCH');
@@ -244,7 +302,9 @@ describe('rollback (RB / RBS)', () => {
     expect(src).toMatch(/preReplaceBy\[pass\] = pre;/);
     expect(src).toMatch(/restoreChecks\(\{ preReplace: preReplaceBy\[pass === 'RB' \? 'RF' : 'RFS'\]/);
     const start = src.indexOf("await startSupervisor('RBS'");
-    const probe = src.indexOf('guardedReinstallCommand(backup)', start);
+    // The probe command is built before the start (the skip record names it); it RUNS after.
+    expect(src).toMatch(/const probe = guardedReinstallCommand\(backup\);/);
+    const probe = src.indexOf('await exec(probe, 300)', start);
     const stop = src.indexOf("await stopSupervisor('RBS')", start);
     const full = src.indexOf('rollbackCommand(backup)', start);
     expect(start).toBeGreaterThan(0);
@@ -360,7 +420,25 @@ describe('member-host baseline install and supervisor start (RFS / RBS)', () => 
     expect(ps).not.toMatch(/Invoke-CimMethod/); // refused with Access denied for a key-auth SSH user
     expect(ps).toContain('set "USERPROFILE=C:\\Users\\fleetmember"');
     expect(ps).toContain('"C:\\Users\\fleetmember\\.apra-fleet\\workflows\\fleet-sprint\\bin\\serve.mjs"');
-    expect(supervisorStartCommand({ node, home, fromCopy: true })).toContain(`/c/Users/fleetmember/${SUPERVISOR_COPY_DIR}/fleet-sprint/bin/serve.mjs`);
+    expect(supervisorStartCommand({ node, home, fromCopy: true })).toContain(`/c/Users/fleetmember/${SUPERVISOR_COPY_DIR}/workflows/fleet-sprint/bin/serve.mjs`);
+  });
+
+  it('the RBS copy keeps the installed layout: node_modules/ next to workflows/, checked for the package serve.mjs imports', () => {
+    const c = supervisorCopyCommand('$HOME/.apra-fleet');
+    expect(c).toContain(`cp -R "$HOME/.apra-fleet/workflows" "$HOME/${SUPERVISOR_COPY_DIR}/workflows"`);
+    expect(c).toContain(`cp -R "$HOME/.apra-fleet/node_modules" "$HOME/${SUPERVISOR_COPY_DIR}/node_modules"`);
+    expect(c).toContain(`test -d "$HOME/${SUPERVISOR_COPY_DIR}/${SUPERVISOR_RUNTIME_PACKAGE}"`);
+    expect(c).toMatch(/&& echo copied$/);
+  });
+
+  it('a supervisor that was not seen gets its pid liveness (no CIM) and both logs as diagnostics', () => {
+    const d = supervisorDiagCommand(1234);
+    const ps = Buffer.from(/EncodedCommand (\S+)/.exec(d)![1], 'base64').toString('utf16le');
+    expect(ps).toMatch(/Get-Process -Id 1234/);
+    expect(ps).not.toMatch(/Cim/);
+    expect(d).toContain('$HOME/supervisor.log');
+    expect(d).toContain('$HOME/.apra-fleet-se/logs/supervisor.log');
+    expect(supervisorDiagCommand(null)).toMatch(/^echo "PID-NONE/);
   });
 
   it('supervisor-started needs the launch pid AND a later fleet-se-check seeing it; a missing serve.mjs is named', () => {

@@ -29,8 +29,9 @@ import {
   CHECK_BIN, NODE_PATH_COMMAND, SUPERVISOR_COPY_DIR, detachedLaunchCommand, launchedPid, standInSprintCommandLine,
   sprintLockCommand, sprintStopCommand, fleetSeCheckCommand, waitSupervisorUpCommand, supervisorStopCommand,
   parseFleetSe, idleSupervisorStoppedNote, launchFailureLine, serviceDiagCommand, cimProbeCommand, diagLine,
+  supervisorCopyCommand, supervisorDiagCommand,
 } from './lib/commands.mjs';
-import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline } from './lib/scenarios.mjs';
+import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline, toolListKeyline } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
 import { MEMBER_PROVIDER, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSucceeded } from './lib/rollback.mjs';
 import { toolResult, execOutcome } from './lib/mcp-result.mjs';
@@ -203,8 +204,10 @@ async function realRun(o) {
     const check = launchedPid(launch.stdout) ? await exec(waitSupervisorUpCommand(), 180) : { stdout: '' };
     const o2 = supervisorStartOutcome(out(launch), check.stdout);
     if (o2.exit !== 0) {
-      const logTail = await exec('tail -n 20 "$HOME/supervisor.log" 2>/dev/null', 30);
-      o2.observed += ` | supervisor.log: ${tail(logTail.stdout, 150)}`;
+      // In the notes, not `observed` (cut to 400 chars, 240 in the table).
+      const d = await exec(supervisorDiagCommand(launchedPid(launch.stdout)), 60);
+      notes.push(`${pass}: supervisor not seen; launch said: ${launchFailureLine(out(launch))} || ${diagLine(out(d), 1200)}`);
+      o2.observed += ' | diagnostics in the report notes';
     }
     rec(pass, `${lc}-supervisor-started`, `start fleet-sprint supervisor${fromCopy ? ` from ~/${SUPERVISOR_COPY_DIR}` : ''}`, o2.exit, '', o2.observed);
     return o2.exit === 0;
@@ -269,16 +272,19 @@ async function realRun(o) {
         const m = await exec(`test -f "${MH}/data/member-install.json" && echo present`);
         rec('RF', 'rf-marker', 'member-install.json', /present/.test(m.stdout) ? m.exitCode : 1, '', tail(out(m), 80));
         const t = await exec(`"${MH}/bin/apra-fleet.exe" call --member ${memberId} --list-tools`);
-        const ok = t.exitCode === 0 && /kb_/.test(t.stdout) && /code_/.test(t.stdout) && !/execute_|register_|credential_/.test(t.stdout);
-        rec('RF', 'rf-tools', 'call --list-tools', t.exitCode, ok ? 'TOOLS-OK' : 'TOOLS-WRONG', tail(out(t)));
-        if (!ok) await serviceDiag('RF, after the candidate member install');
+        // Classified from the FULL output: the recorded tail cuts the error code off.
+        const toolsKey = toolListKeyline(t.exitCode, t.exitCode === 0 ? t.stdout : out(t));
+        rec('RF', 'rf-tools', 'call --list-tools', t.exitCode, toolsKey, tail(out(t)));
+        if (toolsKey !== 'TOOLS-OK') await serviceDiag('RF, after the candidate member install');
       } else if (pass === 'RFS') {
         if (!baseline.tag || !baseline.asset) throw new Error('no usable release baseline');
         await installBaselineOnMember(pass);
         // Copy the release's fleet-sprint runtime aside FIRST, while the full
         // install is certainly there: RBS starts its supervisor from the copy.
-        const cp = await exec(`rm -rf "$HOME/${SUPERVISOR_COPY_DIR}" && cp -R "${MH}/workflows" "$HOME/${SUPERVISOR_COPY_DIR}" && test -f "$HOME/${SUPERVISOR_COPY_DIR}/fleet-sprint/bin/serve.mjs" && echo copied`, 300);
-        rec('RFS', 'rfs-workflows-copied', `copy ${MH}/workflows to ~/${SUPERVISOR_COPY_DIR}`, /copied/.test(cp.stdout) ? cp.exitCode : 1, '', tail(out(cp)));
+        // workflows/ AND node_modules/: serve.mjs imports bare packages that
+        // resolve only from a node_modules/ next to workflows/.
+        const cp = await exec(supervisorCopyCommand(MH), 300);
+        rec('RFS', 'rfs-workflows-copied', `copy ${MH}/{workflows,node_modules} to ~/${SUPERVISOR_COPY_DIR}`, /copied/.test(cp.stdout) ? cp.exitCode : 1, '', tail(out(cp)));
         await startSupervisor('RFS');
         // A running sprint: a stand-in process holding a sprint lock, which is
         // what the install guard's detection counts (no LLM needed).
@@ -368,6 +374,8 @@ async function realRun(o) {
   fs.writeFileSync(path.join(outDir, 'report.md'), report.markdown);
   fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify({ final: report.final, passes: report.passResults, records: recordsByPass }, null, 2));
   console.log(report.markdown);
+  // Loud in the CI run summary, even when the job is green.
+  for (const g of report.knownGaps) console.log(`::warning title=member-host known gap::${g}`);
   process.exit(report.final.exitCode);
 }
 
